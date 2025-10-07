@@ -612,6 +612,27 @@ local function UpdateMasterIconPosition()
     end
 end
 
+-- Función simple para ocultar/mostrar decoración de dragón en vehículo
+local function UpdateDragonVisibilityForVehicle(inVehicle, hasEliteDecoration)
+    if not hasEliteDecoration then
+        return -- Solo actuar si hay decoración elite
+    end
+    
+    local dragonFrame = _G["DragonUIUnitframeFrame"]
+    if not dragonFrame then
+        return
+    end
+    
+    -- Solo cambiar alpha de la decoración del dragón
+    if dragonFrame.PlayerDragonDecoration then
+        if inVehicle then
+            dragonFrame.PlayerDragonDecoration:SetAlpha(0) -- Ocultar en vehículo
+        else
+            dragonFrame.PlayerDragonDecoration:SetAlpha(1) -- Mostrar fuera de vehículo
+        end
+    end
+end
+
 -- Función para poner el timer PVP por encima del dragón Y reposicionarlo
 local function UpdatePVPTimerPosition(isEliteMode)
     local pvpTimerText = _G["PlayerPVPTimerText"]
@@ -1591,6 +1612,12 @@ local function SetupPlayerEvents()
                 if Module.textSystem and Module.textSystem.update then
                     Module.textSystem.update()
                 end
+                
+                -- NUEVO: Ocultar decoración de dragón al entrar al vehículo
+                local config = GetPlayerConfig()
+                local decorationType = config.dragon_decoration or "none"
+                local isEliteMode = decorationType == "elite" or decorationType == "rareelite"
+                UpdateDragonVisibilityForVehicle(true, isEliteMode)
             end
         end,
 
@@ -1602,6 +1629,12 @@ local function SetupPlayerEvents()
                 if Module.textSystem and Module.textSystem.update then
                     Module.textSystem.update()
                 end
+                
+                -- NUEVO: Mostrar decoración de dragón al salir del vehículo
+                local config = GetPlayerConfig()
+                local decorationType = config.dragon_decoration or "none"
+                local isEliteMode = decorationType == "elite" or decorationType == "rareelite"
+                UpdateDragonVisibilityForVehicle(false, isEliteMode)
                 -- Force health and power updates to ensure bars show correctly
                 if PlayerFrameHealthBar then
                     PlayerFrameHealthBar:GetScript("OnEvent")(PlayerFrameHealthBar, "UNIT_HEALTH", "player")
@@ -1674,6 +1707,53 @@ hooksecurefunc("PlayerFrame_ToPlayerArt", function()
     end
     -- Aplicar posición inmediatamente después de la transición
     ApplyWidgetPosition()
+    
+    -- CRÍTICO: Sistema robusto para restaurar estiramiento de mana bar en modo decoración
+    local config = GetPlayerConfig()
+    local decorationType = config.dragon_decoration or "none"
+    local isEliteMode = decorationType == "elite" or decorationType == "rareelite"
+    
+    -- NUEVO: Mostrar decoración de dragón al salir del vehículo
+    UpdateDragonVisibilityForVehicle(false, isEliteMode)
+    
+    if isEliteMode then
+        -- Inmediato: primer intento
+        ChangePlayerframe()
+        UpdateLeadershipIcons()
+        
+        -- Con delay: segundo intento más robusto usando OnUpdate (compatible con 3.3.5a)
+        local delayFrame = CreateFrame("Frame")
+        local attempts = 0
+        delayFrame:SetScript("OnUpdate", function(self, elapsed)
+            attempts = attempts + 1
+            if attempts >= 3 then -- Después de 3 frames (~0.1s)
+                -- Re-aplicar completamente el frame
+                ChangePlayerframe()
+                
+                -- ESPECÍFICO: Forzar el estiramiento de mana bar si no se aplicó correctamente
+                if PlayerFrameManaBar then
+                    local hasVehicleUI = UnitHasVehicleUI("player")
+                    local normalWidth = hasVehicleUI and 117 or 125
+                    local extendedWidth = hasVehicleUI and 130 or 130
+                    
+                    PlayerFrameManaBar:ClearAllPoints()
+                    PlayerFrameManaBar:SetSize(extendedWidth, hasVehicleUI and 9 or 8)
+                    -- CLAVE: Anclar por el lado DERECHO para estiramiento hacia la izquierda
+                    PlayerFrameManaBar:SetPoint('RIGHT', PlayerPortrait, 'RIGHT', 1 + normalWidth, -16.5)
+                end
+                
+                -- También actualizar iconos y decoración
+                UpdateLeadershipIcons()
+                
+                -- Limpiar el frame temporal
+                self:SetScript("OnUpdate", nil)
+            end
+        end)
+    else
+        -- Sin decoración: comportamiento normal
+        ChangePlayerframe()
+        UpdateLeadershipIcons()
+    end
 end)
 
 -- Hook PlayerFrame_ToVehicleArt con seguridad
@@ -1684,6 +1764,12 @@ hooksecurefunc("PlayerFrame_ToVehicleArt", function()
     end
     -- Aplicar posición inmediatamente después de la transición  
     ApplyWidgetPosition()
+    
+    -- NUEVO: Ocultar decoración de dragón al entrar al vehículo
+    local config = GetPlayerConfig()
+    local decorationType = config.dragon_decoration or "none"
+    local isEliteMode = decorationType == "elite" or decorationType == "rareelite"
+    UpdateDragonVisibilityForVehicle(true, isEliteMode)
 end)
 
 -- Hook PlayerFrame_SequenceFinished (final de animaciones)
