@@ -241,6 +241,32 @@ local function SetupStatusBar(bar, point, size, texture)
 end
 
 -- ===============================================================
+-- VEHICLE SYSTEM INTEGRATION FOR PET FRAME
+-- ===============================================================
+
+-- Function to update PetFrame textSystem unit based on vehicle state
+local function UpdatePetTextSystemUnit()
+    if not moduleState.textSystem then
+        return
+    end
+    
+    local hasVehicleUI = UnitHasVehicleUI("player")
+    -- LÓGICA CORRECTA: Cuando estás en vehículo, PetFrame debe mostrar al JUGADOR como "mascota"
+    local targetUnit = hasVehicleUI and "player" or "pet"
+    
+    -- Update both the public unit field and internal reference
+    moduleState.textSystem.unit = targetUnit
+    if moduleState.textSystem._unitRef then
+        moduleState.textSystem._unitRef.unit = targetUnit
+    end
+    
+    -- Force immediate update
+    if moduleState.textSystem.update then
+        moduleState.textSystem.update()
+    end
+end
+
+-- ===============================================================
 -- MAIN FRAME REPLACEMENT
 -- ===============================================================
 local function ReplaceBlizzardPetFrame()
@@ -354,28 +380,34 @@ local function ReplaceBlizzardPetFrame()
         happiness:ClearAllPoints()
         happiness:SetPoint("LEFT", petFrame, "RIGHT", -10, -5)
     end
-    
+
     -- ===============================================================
     -- INTEGRATE TEXT SYSTEM
     -- ===============================================================
     if addon.TextSystem then
         
         
-        -- Setup the advanced text system for pet frame
+        -- Setup the advanced text system for pet frame with dynamic unit
+        local hasVehicleUI = UnitHasVehicleUI("player")
+        local initialUnit = hasVehicleUI and "player" or "pet"
+        
         moduleState.textSystem = addon.TextSystem.SetupFrameTextSystem(
             "pet",                 -- frameType
-            "pet",                 -- unit
+            initialUnit,           -- unit (dynamic based on vehicle state)
             petFrame,              -- parentFrame
             PetFrameHealthBar,     -- healthBar
             PetFrameManaBar,       -- manaBar
             "PetFrame"             -- prefix
         )
         
+        -- Ensure we have the correct unit after setup
+        UpdatePetTextSystemUnit()
         
     else
         
     end
 end
+
 
 -- ===============================================================
 -- UPDATE HANDLER
@@ -392,6 +424,9 @@ local function OnPetFrameUpdate()
     UpdatePowerBarTexture()
     ConfigureCombatMode()
     ConfigurePetThreatGlow()
+    
+    -- Update text system unit for vehicle support
+    UpdatePetTextSystemUnit()
     
     -- Update text system if available
     if moduleState.textSystem and moduleState.textSystem.update then
@@ -436,18 +471,33 @@ function addon.RefreshPetFrame()
     end
 end
 
+
+
 -- ===============================================================
 -- EVENT HANDLING
 -- ===============================================================
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+-- Vehicle events for proper unit switching in PetFrame
+eventFrame:RegisterEvent("UNIT_ENTERED_VEHICLE")
+eventFrame:RegisterEvent("UNIT_EXITED_VEHICLE")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == "DragonUI" then
         PetFrameModule:OnEnable()
     elseif event == "PLAYER_ENTERING_WORLD" then
         PetFrameModule:PLAYER_ENTERING_WORLD()
+        -- Update unit on world enter (handles reloads)
+        UpdatePetTextSystemUnit()
+    elseif event == "UNIT_ENTERED_VEHICLE" and arg1 == "player" then
+        -- When player enters vehicle, PetFrame should show player as "pet"
+        UpdatePetTextSystemUnit()
+        OnPetFrameUpdate()
+    elseif event == "UNIT_EXITED_VEHICLE" and arg1 == "player" then
+        -- When player exits vehicle, PetFrame should show actual pet again
+        UpdatePetTextSystemUnit()
+        OnPetFrameUpdate()
     end
 end)
 

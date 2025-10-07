@@ -248,9 +248,12 @@ end
 -- ===============================================================
 
 -- Función para actualizar texto de health/mana de cualquier unitframe
-function TextSystem.UpdateFrameText(frameType, unit, parentFrame, healthBar, manaBar, prefix)
+function TextSystem.UpdateFrameText(frameType, unit, parentFrame, healthBar, manaBar, prefix, textSystemRef)
+    -- Use dynamic unit from textSystem if available, otherwise use passed unit
+    local actualUnit = (textSystemRef and textSystemRef.unit) or unit
+    
     --  VERIFICAR SI LA UNIDAD EXISTE Y ESTÁ VIVA
-    if not UnitExists(unit) or UnitIsDeadOrGhost(unit) then
+    if not UnitExists(actualUnit) or UnitIsDeadOrGhost(actualUnit) then
         return TextSystem.ClearFrameText(parentFrame, prefix)
     end
 
@@ -266,8 +269,8 @@ function TextSystem.UpdateFrameText(frameType, unit, parentFrame, healthBar, man
 
     -- Actualizar health text
     if healthBar and shouldShowHealth then
-        local health = UnitHealth(unit) or 0
-        local maxHealth = UnitHealthMax(unit) or 1
+        local health = UnitHealth(actualUnit) or 0
+        local maxHealth = UnitHealthMax(actualUnit) or 1
         local healthText = TextSystem.FormatStatusText(health, maxHealth, config.textFormat, config.breakUpLargeNumbers,
             frameType)
         TextSystem.UpdateDualText(parentFrame, prefix .. "Health", healthText, config.textFormat, true)
@@ -277,8 +280,8 @@ function TextSystem.UpdateFrameText(frameType, unit, parentFrame, healthBar, man
 
     -- Actualizar mana text
     if manaBar and shouldShowMana then
-        local power = UnitPower(unit) or 0
-        local maxPower = UnitPowerMax(unit) or 1
+        local power = UnitPower(actualUnit) or 0
+        local maxPower = UnitPowerMax(actualUnit) or 1
         local powerText = TextSystem.FormatStatusText(power, maxPower, config.textFormat, config.breakUpLargeNumbers,
             frameType)
         TextSystem.UpdateDualText(parentFrame, prefix .. "Mana", powerText, config.textFormat, true)
@@ -320,9 +323,12 @@ function TextSystem.SetupFrameTextSystem(frameType, unit, parentFrame, healthBar
 
     prefix = prefix or frameType:gsub("^%l", string.upper) .. "Frame"
 
+    -- Store reference to returned textSystem for dynamic unit access
+    local textSystemRef = { unit = unit }
+    
     --  FUNCIÓN DE ACTUALIZACIÓN COMÚN
     local function updateCallback()
-        TextSystem.UpdateFrameText(frameType, unit, parentFrame, healthBar, manaBar, prefix)
+        TextSystem.UpdateFrameText(frameType, unit, parentFrame, healthBar, manaBar, prefix, textSystemRef)
     end
 
     --  CREAR ELEMENTOS DE TEXTO DUALES (CON FUENTE MÁS GRANDE)
@@ -344,7 +350,10 @@ function TextSystem.SetupFrameTextSystem(frameType, unit, parentFrame, healthBar
         update = updateCallback,
         clear = function()
             TextSystem.ClearFrameText(parentFrame, prefix)
-        end
+        end,
+        unit = unit,  -- For compatibility
+        -- Internal reference that can be modified dynamically
+        _unitRef = textSystemRef
     }
 end
 

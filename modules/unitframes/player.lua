@@ -718,7 +718,30 @@ local function UpdatePowerBarTexture(statusBar)
         
     end
 end
+-- ============================================================================
+-- VEHICLE SYSTEM INTEGRATION
+-- ============================================================================
 
+-- Function to update textSystem unit based on vehicle state
+local function UpdateTextSystemUnit()
+    if not Module.textSystem then
+        return
+    end
+    
+    local hasVehicleUI = UnitHasVehicleUI("player")
+    local targetUnit = hasVehicleUI and "vehicle" or "player"
+    
+    -- Update both the public unit field and internal reference
+    Module.textSystem.unit = targetUnit
+    if Module.textSystem._unitRef then
+        Module.textSystem._unitRef.unit = targetUnit
+    end
+    
+    -- Force immediate update
+    if Module.textSystem.update then
+        Module.textSystem.update()
+    end
+end
 -- ============================================================================
 -- FRAME CREATION & CONFIGURATION
 -- ============================================================================
@@ -1227,10 +1250,14 @@ local function ApplyPlayerConfig()
     local dragonFrame = _G["DragonUIUnitframeFrame"]
     if dragonFrame and addon.TextSystem then
         if not Module.textSystem then
-            Module.textSystem = addon.TextSystem.SetupFrameTextSystem("player", "player", dragonFrame,
+            -- Initialize with dynamic unit based on vehicle state
+            local initialUnit = UnitHasVehicleUI("player") and "vehicle" or "player"
+            Module.textSystem = addon.TextSystem.SetupFrameTextSystem("player", initialUnit, dragonFrame,
                 PlayerFrameHealthBar, PlayerFrameManaBar, "PlayerFrame")
         end
         if Module.textSystem then
+            -- Ensure we have the correct unit after setup
+            UpdateTextSystemUnit()
             Module.textSystem.update()
         end
     end
@@ -1273,6 +1300,7 @@ local function RefreshPlayerFrame()
 
     
 end
+
 
 -- ============================================================================
 -- INITIALIZATION
@@ -1381,6 +1409,7 @@ local function InitializePlayerFrame()
     
 end
 
+
 -- ============================================================================
 -- EVENT SYSTEM
 -- ============================================================================
@@ -1423,6 +1452,8 @@ local function SetupPlayerEvents()
             ApplyPlayerConfig()
             -- Ensure Blizzard texts are hidden after entering world
             HideBlizzardPlayerTexts()
+            -- Update textSystem unit in case of reload while in vehicle
+            UpdateTextSystemUnit()
         end,
 
         RUNE_TYPE_UPDATE = function(runeIndex)
@@ -1442,6 +1473,36 @@ local function SetupPlayerEvents()
         UNIT_AURA = function(unit)
             if unit == "player" then
                 UpdateBothBars()
+            end
+        end,
+
+        -- Vehicle events for proper unit switching
+        UNIT_ENTERED_VEHICLE = function(unit)
+            if unit == "player" then
+                UpdateTextSystemUnit()
+                UpdateBothBars()
+                -- Force textSystem update after unit change
+                if Module.textSystem and Module.textSystem.update then
+                    Module.textSystem.update()
+                end
+            end
+        end,
+
+        UNIT_EXITED_VEHICLE = function(unit)
+            if unit == "player" then
+                UpdateTextSystemUnit()
+                UpdateBothBars()
+                -- Force textSystem update after unit change and trigger health events
+                if Module.textSystem and Module.textSystem.update then
+                    Module.textSystem.update()
+                end
+                -- Force health and power updates to ensure bars show correctly
+                if PlayerFrameHealthBar then
+                    PlayerFrameHealthBar:GetScript("OnEvent")(PlayerFrameHealthBar, "UNIT_HEALTH", "player")
+                end
+                if PlayerFrameManaBar then
+                    PlayerFrameManaBar:GetScript("OnEvent")(PlayerFrameManaBar, "UNIT_POWER_UPDATE", "player")
+                end
             end
         end
     }
