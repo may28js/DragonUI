@@ -308,18 +308,8 @@ local function RestoreMulticastSystem()
     if MultiCastActionBarFrame and class == 'SHAMAN' and MulticastModule.originalStates.multiCastActionBarFrame then
         local original = MulticastModule.originalStates.multiCastActionBarFrame
         
-        -- CRÍTICO: Restaurar funciones originales ANTES de mover el frame
-        if original.originalSetParent then
-            MultiCastActionBarFrame.SetParent = original.originalSetParent
-        else
-            MultiCastActionBarFrame.SetParent = nil
-        end
-        
-        if original.originalSetPoint then
-            MultiCastActionBarFrame.SetPoint = original.originalSetPoint
-        else
-            MultiCastActionBarFrame.SetPoint = nil
-        end
+        -- SAFE: Since we used hooks instead of function replacement, 
+        -- we don't need to restore the original functions - they were never replaced
         
         -- Restaurar scripts originales
         if original.originalScripts then
@@ -436,17 +426,44 @@ local function ApplyMulticastSystem()
         possessbar:Show()
         anchor:Show()
         
-        -- Prevent the frame from being moved by other addons
-        MultiCastActionBarFrame.SetParent = noop
-        MultiCastActionBarFrame.SetPoint = noop
-        
-        -- Also protect the recall button if it exists
-        if MultiCastRecallSpellButton then
-            MulticastModule.originalStates.multiCastRecallButton = {
-                originalSetPoint = MultiCastRecallSpellButton.SetPoint
-            }
-            MultiCastRecallSpellButton.SetPoint = noop
+        -- SAFE: Use hooks instead of function replacement to avoid taint
+        if not MulticastModule.hooks.multiCastSetParent then
+            MulticastModule.hooks.multiCastSetParent = true
+            hooksecurefunc(MultiCastActionBarFrame, "SetParent", function(self, newParent)
+                -- Only interfere if we applied the system and someone tries to move it away
+                if MulticastModule.applied and newParent ~= possessbar and newParent ~= UIParent then
+                    -- Schedule a delayed correction (non-taint way)
+                    DelayedCall(0.01, function()
+                        if MulticastModule.applied and MultiCastActionBarFrame:GetParent() ~= possessbar then
+                            MultiCastActionBarFrame:SetParent(possessbar)
+                        end
+                    end)
+                end
+            end)
         end
+
+        if not MulticastModule.hooks.multiCastSetPoint then
+            MulticastModule.hooks.multiCastSetPoint = true
+            hooksecurefunc(MultiCastActionBarFrame, "SetPoint", function(self, ...)
+                -- Only interfere if we applied the system
+                if MulticastModule.applied then
+                    -- Schedule a delayed correction (non-taint way)
+                    DelayedCall(0.01, function()
+                        if MulticastModule.applied then
+                            -- Check if it's still in our expected position
+                            local point, relativeTo, relativePoint = MultiCastActionBarFrame:GetPoint(1)
+                            if relativeTo ~= possessbar or relativePoint ~= 'BOTTOM' then
+                                MultiCastActionBarFrame:ClearAllPoints()
+                                MultiCastActionBarFrame:SetPoint('BOTTOM', possessbar, 'BOTTOM', 0, 0)
+                            end
+                        end
+                    end)
+                end
+            end)
+        end
+        
+        -- SAFE: Don't touch the recall button at all - it's not necessary for positioning
+        -- The recall button can function normally without our interference
     end
     
     -- Hook action bar events for dynamic positioning
