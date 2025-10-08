@@ -1024,9 +1024,20 @@ function CastbarModule:HandleCastStop(unitType, isInterrupted)
     local cfg = GetConfig(unitType)
     if not cfg then return end
     
-    --  MEJORADO: Lógica más robusta
-    if isInterrupted and not state.selfInterrupt then
-        -- Verdadera interrupción
+    -- CRITICAL: Detectar automáticamente si fue interrupción real basado en progreso
+    local wasReallyInterrupted = isInterrupted
+    
+    -- Para target/focus, verificar si el cast se detuvo antes de completar
+    if not state.selfInterrupt and state.currentValue and state.maxValue then
+        local progress = state.currentValue / state.maxValue
+        -- Si el cast se detuvo con menos de 95% completado, probablemente fue interrupción
+        if progress < 0.95 then
+            wasReallyInterrupted = true
+        end
+    end
+    
+    if wasReallyInterrupted and not state.selfInterrupt then
+        -- Verdadera interrupción - mostrar fondo rojo
         if frames.shield then frames.shield:Hide() end
         HideAllTicks(frames.ticks)
         
@@ -1046,11 +1057,19 @@ function CastbarModule:HandleCastStop(unitType, isInterrupted)
         state.holdTime = cfg.holdTimeInterrupt or 0.8
     else
         -- Completado naturalmente O selfInterrupt=true
-        if unitType == "player" then
-            state.castSucceeded = true
-        else
-            self:FinishSpell(unitType)
-        end
+        -- FIXED: Usar mismo sistema de castSucceeded para todos los unit types
+        
+        -- Configurar visual de completion inmediatamente
+        if frames.spark then frames.spark:Hide() end
+        if frames.shield then frames.shield:Hide() end
+        if frames.flash then frames.flash:Show() end
+        
+        HideAllTicks(frames.ticks)
+        
+        state.casting = false
+        state.isChanneling = false
+        state.castSucceeded = true
+        state.graceTime = 0  -- Reset grace time
     end
     
     --  NUEVO: Reset flag al final (siempre)
@@ -1145,8 +1164,8 @@ function CastbarModule:OnUpdate(unitType, castbar, elapsed)
         end
     end
 
-    -- Validación robusta para target/focus
-    if unitType ~= "player" then
+    -- Validación robusta para target/focus (SKIP durante período de gracia)
+    if unitType ~= "player" and not state.castSucceeded then
         if not UnitExists(unitType) then
             if state.casting or state.isChanneling then
                 self:HideCastbar(unitType)
@@ -1163,17 +1182,18 @@ function CastbarModule:OnUpdate(unitType, castbar, elapsed)
             return
         end
         
-        --  Verificar si cast expiró por tiempo
-        if (state.casting or state.isChanneling) and state.endTime > 0 then
+        --  Verificar si cast expiró por tiempo - SKIP durante período de gracia
+        if (state.casting or state.isChanneling) and state.endTime > 0 and not state.castSucceeded then
             local now = GetTime()
             if now > state.endTime then
-                self:HideCastbar(unitType)
+                -- El cast se completó naturalmente al alcanzar endTime
+                self:HandleCastStop(unitType, false)
                 return
             end
         end
         
-        --  Verificación periódica del servidor (throttled)
-        if state.casting or state.isChanneling then
+        --  Verificación periódica del servidor (throttled) - SKIP durante período de gracia
+        if (state.casting or state.isChanneling) and not state.castSucceeded then
             local now = GetTime()
             if (now - state.lastServerCheck) > 0.2 then  -- Cada 200ms
                 state.lastServerCheck = now
@@ -1185,17 +1205,22 @@ function CastbarModule:OnUpdate(unitType, castbar, elapsed)
                     serverName = UnitChannelInfo(unitType)
                 end
                 
-                -- Si no hay cast en servidor, ocultar (target fuera de rango, etc.)
+                -- Si no hay cast en servidor, verificar si fue interrupción
                 if not serverName then
-                    self:HideCastbar(unitType)
+                    -- Si el cast desapareció antes de completarse, tratarlo como interrupción
+                    if state.currentValue and state.maxValue and (state.currentValue / state.maxValue) < 0.95 then
+                        self:HandleCastStop(unitType, true)  -- Tratar como interrupción
+                    else
+                        self:HandleCastStop(unitType, false)  -- Tratar como completion natural
+                    end
                     return
                 end
             end
         end
     end
     
-    -- Handle success grace period (player only)
-    if unitType == "player" and state.castSucceeded and (state.casting or state.isChanneling) then
+    -- Handle success grace period (all unit types)
+    if state.castSucceeded then
         state.currentValue = state.isChanneling and 0 or state.maxValue
         castbar:SetValue(state.maxValue)
         
@@ -1271,7 +1296,7 @@ function CastbarModule:OnUpdate(unitType, castbar, elapsed)
         
         UpdateTimeText(unitType)
         
-        if frames.flash then
+        if frames.flash and not state.castSucceeded then
             frames.flash:Hide()
         end
     end
@@ -1535,6 +1560,11 @@ function CastbarModule:HandleCastingEvent(event, unit)
         --   Verificar que el evento corresponde al cast actual
         local state = self.states[unitType]
         
+        -- CRITICAL: Si ya estamos en período de gracia (cast ya completado), ignorar este evento
+        if state.castSucceeded then
+            return
+        end
+        
         --  Verificar GUID para evitar eventos de units incorrectos
         if unitType ~= "player" then
             local currentGUID = UnitGUID(unit)
@@ -1548,7 +1578,9 @@ function CastbarModule:HandleCastingEvent(event, unit)
             state.selfInterrupt = true
         end
         
-        self:HandleCastStop(unitType, false)  -- Siempre completado naturalmente
+        -- CRITICAL: No asumir que STOP = completado naturalmente
+        -- Dejar que HandleCastStop determine si fue interrupción basado en progreso
+        self:HandleCastStop(unitType, false)
     elseif event == 'UNIT_SPELLCAST_FAILED' then
         --  NUEVO: Manejo de fallos 
         local state = self.states[unitType]
