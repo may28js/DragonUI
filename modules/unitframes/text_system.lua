@@ -357,16 +357,33 @@ function TextSystem.SetupFrameTextSystem(frameType, unit, parentFrame, healthBar
     }
 end
 
---  FUNCIÓN: Configurar eventos de hover (MANTENER)
+--  FUNCIÓN: Configurar eventos de hover (PLAYER CLICK-THROUGH)
 function TextSystem.SetupHoverEvents(parentFrame, healthBar, manaBar, updateCallback)
+    -- Detectar si es PlayerFrame para aplicar click-through
+    local parentName = parentFrame:GetName() or ""
+    local isPlayerFrame = (parentName:find("DragonUIUnitframeFrame") ~= nil)
+    
     if healthBar then
         local healthHover = CreateFrame("Frame", nil, parentFrame)
         healthHover:SetAllPoints(healthBar)
-        healthHover:EnableMouse(true)
         healthHover:SetFrameLevel(parentFrame:GetFrameLevel() + 10)
-
-        healthHover:SetScript("OnEnter", updateCallback)
-        healthHover:SetScript("OnLeave", updateCallback)
+        
+        if isPlayerFrame then
+            -- PLAYER FRAME: Click-through habilitado
+            healthHover:EnableMouse(false)  -- NO capturar clicks
+            -- Configurar hover directamente en la StatusBar subyacente
+            if not healthBar.DragonUIHoverSetup then
+                healthBar:EnableMouse(true)
+                healthBar:SetScript("OnEnter", updateCallback)
+                healthBar:SetScript("OnLeave", updateCallback)
+                healthBar.DragonUIHoverSetup = true
+            end
+        else
+            -- OTROS FRAMES (Focus, Target): Comportamiento original
+            healthHover:EnableMouse(true)
+            healthHover:SetScript("OnEnter", updateCallback)
+            healthHover:SetScript("OnLeave", updateCallback)
+        end
 
         parentFrame.DragonUIHealthHover = healthHover
     end
@@ -374,11 +391,24 @@ function TextSystem.SetupHoverEvents(parentFrame, healthBar, manaBar, updateCall
     if manaBar then
         local manaHover = CreateFrame("Frame", nil, parentFrame)
         manaHover:SetAllPoints(manaBar)
-        manaHover:EnableMouse(true)
         manaHover:SetFrameLevel(parentFrame:GetFrameLevel() + 10)
-
-        manaHover:SetScript("OnEnter", updateCallback)
-        manaHover:SetScript("OnLeave", updateCallback)
+        
+        if isPlayerFrame then
+            -- PLAYER FRAME: Click-through habilitado
+            manaHover:EnableMouse(false)  -- NO capturar clicks
+            -- Configurar hover directamente en la StatusBar subyacente
+            if not manaBar.DragonUIHoverSetup then
+                manaBar:EnableMouse(true)
+                manaBar:SetScript("OnEnter", updateCallback)
+                manaBar:SetScript("OnLeave", updateCallback)
+                manaBar.DragonUIHoverSetup = true
+            end
+        else
+            -- OTROS FRAMES (Focus, Target): Comportamiento original
+            manaHover:EnableMouse(true)
+            manaHover:SetScript("OnEnter", updateCallback)
+            manaHover:SetScript("OnLeave", updateCallback)
+        end
 
         parentFrame.DragonUIManaHover = manaHover
     end
