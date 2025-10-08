@@ -69,6 +69,12 @@ local CastbarModule = {
             lastRows = 0,
             lastOffset = 0,
             lastGUID = nil
+        },
+        focus = {
+            lastUpdate = 0,
+            lastRows = 0,
+            lastOffset = 0,
+            lastGUID = nil
         }
     }
 }
@@ -336,16 +342,23 @@ local function GetTargetAuraOffset()
     -- Simple approach: check if target has multiple aura rows
     if TargetFrame and TargetFrame.auraRows and TargetFrame.auraRows > 1 then
         local rows = TargetFrame.auraRows
-        local offset = 0
         
-        -- Sistema progresivo inverso: cada fila adicional empuja menos
-        -- Fila 1: +24px, Fila 2: +18px, Fila 3: +14px, Fila 4: +12px, etc.
-        for i = 2, rows do
-            local rowOffset = math.max(4, 16 - (i * 2))  -- Decremento de 3px por fila, mínimo 8px
-            offset = offset + rowOffset
+        -- MEJORADO: Detectar si hay debuffs para aplicar offset mayor
+        local hasDebuffs = false
+        for i = 1, 40 do
+            if UnitDebuff("target", i) then
+                hasDebuffs = true
+                break
+            end
         end
         
-        return offset
+        -- SINCRONIZADO CON FOCUS: Usar los mismos valores que focus
+        local baseOffset = (rows - 1) * 10  -- Usar 18px como focus
+        if hasDebuffs then
+            baseOffset = baseOffset + 24  -- Usar 24px como focus para debuffs
+        end
+        
+        return baseOffset
     end
     
     return 0
@@ -365,6 +378,158 @@ local function ApplyTargetAuraOffset()
     frames.castbar:SetPoint(cfg.anchor, anchorFrame, cfg.anchorParent, 
                            cfg.x_position, cfg.y_position - offset)
 end
+
+-- ============================================================================
+-- FOCUS AURA OFFSET SYSTEM (Custom implementation since WoW doesn't have one)
+-- ============================================================================
+
+local function CountFocusAuras()
+    if not UnitExists("focus") then return 0, 0 end
+    
+    local buffCount = 0
+    local debuffCount = 0
+    
+    -- Count buffs
+    local index = 1
+    while true do
+        local name = UnitAura("focus", index, "HELPFUL")
+        if not name then break end
+        buffCount = buffCount + 1
+        index = index + 1
+        if index > 40 then break end
+    end
+    
+    -- Count debuffs
+    index = 1
+    while true do
+        local name = UnitAura("focus", index, "HARMFUL")
+        if not name then break end
+        debuffCount = debuffCount + 1
+        index = index + 1
+        if index > 40 then break end
+    end
+    
+    return buffCount, debuffCount
+end
+
+local function GetFocusAuraOffset()
+    local cfg = GetConfig("focus")
+    if not cfg or not cfg.autoAdjust then return 0 end
+    
+    local buffCount, debuffCount = CountFocusAuras()
+    
+    if buffCount == 0 and debuffCount == 0 then return 0 end
+    
+    local AURAS_PER_ROW = 6  -- Tanto target como focus usan 6 auras por fila
+    local BUFF_ROW_HEIGHT = 10    -- Cada fila de buffs = 18px
+    local DEBUFF_ROW_HEIGHT = 24  -- Cada fila de debuffs = 24px (más grande)
+    
+    -- Calcular offset total
+    local totalOffset = 0
+    
+    -- Contar filas de buffs
+    if buffCount > 0 then
+        local buffRows = math.ceil(buffCount / AURAS_PER_ROW)
+        if buffRows > 1 then
+            totalOffset = totalOffset + ((buffRows - 1) * BUFF_ROW_HEIGHT)
+        end
+    end
+    
+    -- Si hay debuffs, añadir offset de debuffs (más grande)
+    if debuffCount > 0 then
+        totalOffset = totalOffset + DEBUFF_ROW_HEIGHT
+    end
+    
+    return totalOffset
+end
+
+local function ApplyFocusAuraOffset()
+    local frames = CastbarModule.frames.focus
+    if not frames.castbar or not frames.castbar:IsVisible() then return end
+    
+    local cfg = GetConfig("focus")
+    if not cfg or not cfg.enabled or not cfg.autoAdjust then return end
+    
+    local offset = GetFocusAuraOffset()
+    local anchorFrame = _G[cfg.anchorFrame] or FocusFrame or UIParent
+    
+    -- Debug: Uncomment for troubleshooting
+    -- print(string.format("DragonUI Applying Focus offset: %dpx (base Y: %d, final Y: %d)", 
+    --     offset, cfg.y_position, cfg.y_position - offset))
+    
+    frames.castbar:ClearAllPoints()
+    frames.castbar:SetPoint(cfg.anchor, anchorFrame, cfg.anchorParent, 
+                           cfg.x_position, cfg.y_position - offset)
+end
+
+-- Debug function to test focus aura system
+local function DebugFocusAuras()
+    if not UnitExists("focus") then
+        print("DragonUI: No focus target")
+        return
+    end
+    
+    local buffCount, debuffCount = CountFocusAuras()
+    local offset = GetFocusAuraOffset()
+    
+    -- Calculate layout details
+    local AURAS_PER_ROW = 8
+    local buffRows = buffCount > 0 and math.ceil(buffCount / AURAS_PER_ROW) or 0
+    local debuffRows = debuffCount > 0 and math.ceil(debuffCount / AURAS_PER_ROW) or 0
+    local separationRows = (buffCount > 0 and debuffCount > 0) and 1 or 0
+    local totalRows = buffRows + separationRows + debuffRows
+    
+    print(string.format("DragonUI Focus Auras - Buffs: %d (%d rows), Debuffs: %d (%d rows)", 
+                       buffCount, buffRows, debuffCount, debuffRows))
+    print(string.format("Layout: %d buff rows + %d separation + %d debuff rows = %d total rows", 
+                       buffRows, separationRows, debuffRows, totalRows))
+    print(string.format("Calculated offset: %d pixels", offset))
+    
+    -- Test both methods for comparison
+    print("=== Method Comparison ===")
+    
+    -- Method 1: UnitAura with filters
+    local buffCount1, debuffCount1 = 0, 0
+    for i = 1, 40 do
+        if UnitAura("focus", i, "HELPFUL") then buffCount1 = buffCount1 + 1 end
+        if UnitAura("focus", i, "HARMFUL") then debuffCount1 = debuffCount1 + 1 end
+    end
+    print(string.format("UnitAura method - Buffs: %d, Debuffs: %d", buffCount1, debuffCount1))
+    
+    -- Method 2: UnitBuff/UnitDebuff
+    local buffCount2, debuffCount2 = 0, 0
+    for i = 1, 40 do
+        if UnitBuff("focus", i) then buffCount2 = buffCount2 + 1 end
+        if UnitDebuff("focus", i) then debuffCount2 = debuffCount2 + 1 end
+    end
+    print(string.format("UnitBuff/Debuff method - Buffs: %d, Debuffs: %d", buffCount2, debuffCount2))
+    
+    -- List actual auras found
+    print("=== Actual Auras Found ===")
+    print("Buffs (UnitAura HELPFUL):")
+    for i = 1, 40 do
+        local name = UnitAura("focus", i, "HELPFUL")
+        if name then
+            print("  " .. i .. ": " .. name)
+        else
+            break
+        end
+    end
+    
+    print("Debuffs (UnitAura HARMFUL):")
+    for i = 1, 40 do
+        local name = UnitAura("focus", i, "HARMFUL")
+        if name then
+            print("  " .. i .. ": " .. name)
+        else
+            break
+        end
+    end
+end
+
+-- Register debug command
+SLASH_DRAGONUI_FOCUSAURAS1 = "/duifocusauras"
+SlashCmdList["DRAGONUI_FOCUSAURAS"] = DebugFocusAuras
 
 -- ============================================================================
 -- TEXT MANAGEMENT
@@ -1143,10 +1308,12 @@ function CastbarModule:RefreshCastbar(unitType)
     local frames = self.frames[unitType]
     local frameName = 'DragonUI' .. unitType:sub(1,1):upper() .. unitType:sub(2) .. 'Castbar'
     
-    -- Calculate aura offset for target
+    -- Calculate aura offset for target and focus
     local auraOffset = 0
     if unitType == "target" and cfg.autoAdjust then
         auraOffset = GetTargetAuraOffset()
+    elseif unitType == "focus" and cfg.autoAdjust then
+        auraOffset = GetFocusAuraOffset()
     end
     
     -- Position and size castbar
@@ -1470,6 +1637,7 @@ function CastbarModule:HandleFocusChanged()
                     state.unitGUID = newGUID  -- Establecer GUID antes del evento
                     self:HandleCastingEvent('UNIT_SPELLCAST_CHANNEL_START', "focus")
                 end
+                ApplyFocusAuraOffset()
             end
         end, 0.05)
     else
@@ -1547,6 +1715,11 @@ local function OnEvent(self, event, unit, ...)
         local cfg = GetConfig("target")
         if cfg and cfg.enabled and cfg.autoAdjust then
             addon.core:ScheduleTimer(ApplyTargetAuraOffset, 0.05)
+        end
+    elseif event == 'UNIT_AURA' and unit == 'focus' then
+        local cfg = GetConfig("focus")
+        if cfg and cfg.enabled and cfg.autoAdjust then
+            addon.core:ScheduleTimer(ApplyFocusAuraOffset, 0.05)
         end
     elseif event == 'PLAYER_TARGET_CHANGED' then
         CastbarModule:HandleTargetChanged()
@@ -1638,9 +1811,7 @@ if TargetFrameSpellBar then
     end)
 end
 
--- [[ O P R A V A ]] --
--- Hook pro detekci otevření mapy světa, což může pozastavit kouzlení.
--- Přejmenovali jsme lokální proměnné, abychom předešli "taint" chybě způsobené konfliktem názvů.
+-- Hook para manejar pausas de casting cuando se abre el mapa
 if WorldMapFrame then
     hooksecurefunc(WorldMapFrame, "Show", function()
         -- Sincronizar castbar del player cuando se abre el mapa
