@@ -188,14 +188,26 @@ local function CreateTextureClipping(statusBar)
         local texture = self:GetStatusBarTexture()
         if not texture then return end
         
+        -- Asegurar que la textura esté correctamente posicionada
         texture:ClearAllPoints()
         texture:SetPoint('TOPLEFT', self, 'TOPLEFT', 0, 0)
         texture:SetPoint('BOTTOMRIGHT', self, 'BOTTOMRIGHT', 0, 0)
         
+        -- Forzar layer correcto
         ForceStatusBarLayer(self)
         
-        local clampedProgress = max(0.001, min(1, progress))
-        texture:SetTexCoord(0, clampedProgress, 0, 1)
+        --  Clamping más suave para evitar parpadeos
+        local clampedProgress = max(0.001, min(0.999, progress))
+        
+        --  Lógica correcta para channels
+        if isChanneling then
+            -- Channel: La barra se vacía de derecha a izquierda
+            -- Progress va de 1 -> 0, pero SetTexCoord necesita 0 -> 1
+            texture:SetTexCoord(0, clampedProgress, 0, 1)
+        else
+            -- Cast: La barra se llena de izquierda a derecha (normal)
+            texture:SetTexCoord(0, clampedProgress, 0, 1)
+        end
     end
 end
 
@@ -283,6 +295,7 @@ local function UpdateChannelTicks(parent, ticksTable, spellName)
     end
     
     local tickCount = CHANNEL_TICKS[spellName]
+    
     if not tickCount or tickCount <= 1 then return end
     
     local width = parent:GetWidth()
@@ -298,6 +311,7 @@ local function UpdateChannelTicks(parent, ticksTable, spellName)
         end
     end
 end
+
 
 local function HideAllTicks(ticksTable)
     for i = 1, MAX_TICKS do
@@ -791,74 +805,39 @@ local function CreateCastbar(unitType)
         CastbarModule:OnUpdate(unitType, self, elapsed)
     end)
 end
--- ============================================================================
--- VISUAL UPDATES CONSOLIDATION (Anti-Flicker Solution)
--- ============================================================================
 
-local function UpdateCastbarVisuals(unitType, progress)
-    local frames = CastbarModule.frames[unitType]
-    local state = CastbarModule.states[unitType]
-    
-    if not frames or not frames.castbar then return end
-    
-    -- Una sola actualización de textura para evitar conflictos
-    if frames.castbar.UpdateTextureClipping then
-        frames.castbar:UpdateTextureClipping(progress, state.isChanneling)
-    end
-    
-    -- Una sola actualización de spark para evitar múltiples reposicionamientos
-    if frames.spark and frames.spark:IsShown() then
-        -- FIXED: Aplicar la misma escala que el castbar al calcular la posición
-        local castbarScale = frames.castbar:GetScale() or 1
-        local actualWidth = frames.castbar:GetWidth() * progress * castbarScale
-        frames.spark:ClearAllPoints()
-        frames.spark:SetPoint('CENTER', frames.castbar, 'LEFT', actualWidth / castbarScale, 0)
-    end
-end
 -- ============================================================================
 -- CASTING EVENT HANDLERS
 -- ============================================================================
 
-function CastbarModule:HandleCastStart(unitType, unit)
-    local name, _, _, iconTex, startTime, endTime, isTradeSkill, castID, notInterruptible = UnitCastingInfo(unit)
-    if not name then return end
+function CastbarModule:HandleCastStart_Simple(unitType, unit, isChanneling)
+    local spell, displayName, icon, startTime, endTime
+    
+    if isChanneling then
+        spell, _, displayName, icon, startTime, endTime = UnitChannelInfo(unit)
+    else
+        spell, _, displayName, icon, startTime, endTime = UnitCastingInfo(unit)
+    end
+    
+    if not spell then return end
     
     self:RefreshCastbar(unitType)
     
-    local state = self.states[unitType]
     local frames = self.frames[unitType]
+    local state = self.states[unitType]
     
-    --  Guardar GUID y tiempos del servidor
-    if unitType ~= "player" then
-        state.unitGUID = UnitGUID(unit)
-    end
-    
-    state.casting = true
-    state.isChanneling = false
-    state.holdTime = 0
-    state.spellName = name
-    state.selfInterrupt = false
-    
-    if unitType == "player" then
-        state.castSucceeded = false
-        state.graceTime = 0
-    end
+    -- Establecer estado básico
+    state.casting = not isChanneling
+    state.isChanneling = isChanneling
+    state.spellName = spell
     
     local start, finish, duration = ParseCastTimes(startTime, endTime)
-    state.maxValue = duration
-    
-    --  Guardar tiempos del servidor para validación (PARA TODOS)
     state.startTime = start
     state.endTime = finish
-    state.lastServerCheck = GetTime()
+    state.maxValue = duration
     
-    --  FIX: Calcular progreso actual basado en tiempo transcurrido
-    local currentTime = GetTime()
-    local elapsed = currentTime - start
-    state.currentValue = max(0, min(elapsed, duration))
-    
-    frames.castbar:SetMinMaxValues(0, state.maxValue)
-    frames.castbar:SetValue(state.currentValue)  --  Usar progreso calculado
+    -- Configuración inicial del castbar
+    frames.castbar:SetMinMaxValues(0, duration)
     frames.castbar:Show()
     
     if frames.background and frames.background ~= frames.textBackground then
@@ -868,21 +847,27 @@ function CastbarModule:HandleCastStart(unitType, unit)
     if frames.spark then frames.spark:Show() end
     if frames.flash then frames.flash:Hide() end
     
+    -- ✅ CRITICAL: Ocultar todos los ticks primero, luego mostrar si es channel
     HideAllTicks(frames.ticks)
     
-    frames.castbar:SetStatusBarTexture(TEXTURES.standard)
-    frames.castbar:SetStatusBarColor(1, 0.7, 0, 1)
+-- Textura según tipo
+    if isChanneling then
+        frames.castbar:SetStatusBarTexture(TEXTURES.channel)
+        frames.castbar:SetStatusBarColor(unitType == "player" and 0 or 1, 1, unitType == "player" and 1 or 1, 1)
+        -- ✅ FIXED: Usar 'spell' (nombre real) en lugar de 'displayName'
+        UpdateChannelTicks(frames.castbar, frames.ticks, spell)
+    else
+        frames.castbar:SetStatusBarTexture(TEXTURES.standard)
+        frames.castbar:SetStatusBarColor(1, 0.7, 0, 1)
+    end
+    
     ForceStatusBarLayer(frames.castbar)
+    SetCastText(unitType, displayName)
     
-    --  FIX: Actualizar clipping con progreso real usando función consolidada
-    local progress = state.currentValue / state.maxValue
-    UpdateCastbarVisuals(unitType, progress)
-    
-    SetCastText(unitType, name)
-    
+    -- Configurar icono y texto (sin cambios)
     local cfg = GetConfig(unitType)
     if frames.icon and cfg and cfg.showIcon then
-        frames.icon:SetTexture(GetSpellIcon(name, iconTex))
+        frames.icon:SetTexture(GetSpellIcon(displayName, icon))
         frames.icon:Show()
         if frames.icon.Border then frames.icon.Border:Show() end
     else
@@ -896,148 +881,19 @@ function CastbarModule:HandleCastStart(unitType, unit)
         frames.textBackground:SetSize(frames.castbar:GetWidth(), unitType == "player" and 22 or 20)
         frames.textBackground:SetPoint("TOP", frames.castbar, "BOTTOM", 0, unitType == "player" and 6 or 8)
     end
-    
-    UpdateTimeText(unitType)
-    
-    --  FIX: Actualizar posición del spark con progreso real
-    if frames.spark and frames.spark:IsShown() then
-        local progress = state.currentValue / state.maxValue
-        -- FIXED: Usar función consolidada que maneja la escala correctamente
-        UpdateCastbarVisuals(unitType, progress)
-    end
-    
-    if unitType ~= "player" and frames.shield and cfg and cfg.showIcon then
-        if notInterruptible and not isTradeSkill then
-            frames.shield:Show()
-        else
-            frames.shield:Hide()
-        end
-    end
 end
 
-function CastbarModule:HandleChannelStart(unitType, unit)
-    local name, _, _, iconTex, startTime, endTime, isTradeSkill, notInterruptible = UnitChannelInfo(unit)
-    if not name then return end
-    
-    self:RefreshCastbar(unitType)
-    
-    local state = self.states[unitType]
+function CastbarModule:HandleCastStop_Simple(unitType, wasInterrupted)
     local frames = self.frames[unitType]
-    
-    -- Guardar GUID y tiempos del servidor
-    if unitType ~= "player" then
-        state.unitGUID = UnitGUID(unit)
-    end
-    
-    state.casting = true
-    state.isChanneling = true
-    state.holdTime = 0
-    state.spellName = name
-    state.selfInterrupt = false
-    
-    if unitType == "player" then
-        state.castSucceeded = false
-        state.graceTime = 0
-    end
-    
-    local start, finish, duration = ParseCastTimes(startTime, endTime)
-    state.maxValue = duration
-    
-    --  Guardar tiempos del servidor para validación (PARA TODOS)
-    state.startTime = start
-    state.endTime = finish
-    state.lastServerCheck = GetTime()
-    
-    --  FIX: Calcular progreso actual para channels (restante)
-    local currentTime = GetTime()
-    local elapsed = currentTime - start
-    state.currentValue = max(0, duration - elapsed)  -- Channels van hacia abajo
-    
-    frames.castbar:SetMinMaxValues(0, state.maxValue)
-    frames.castbar:SetValue(state.currentValue)  --  Usar progreso calculado
-    frames.castbar:Show()
-    
-    if frames.background and frames.background ~= frames.textBackground then
-        frames.background:Show()
-    end
-    
-    if frames.spark then frames.spark:Show() end
-    if frames.flash then frames.flash:Hide() end
-    
-    frames.castbar:SetStatusBarTexture(TEXTURES.channel)
-    ForceStatusBarLayer(frames.castbar)
-    
-    if unitType == "player" then
-        frames.castbar:SetStatusBarColor(0, 1, 0, 1)
-    else
-        frames.castbar:SetStatusBarColor(1, 1, 1, 1)
-    end
-    
-    --  FIX: Actualizar clipping con progreso real usando función consolidada
-    local progress = state.currentValue / state.maxValue
-    UpdateCastbarVisuals(unitType, progress)
-    
-    SetCastText(unitType, name)
-    
-    local cfg = GetConfig(unitType)
-    if frames.icon and cfg and cfg.showIcon then
-        frames.icon:SetTexture(GetSpellIcon(name, iconTex))
-        frames.icon:Show()
-        if frames.icon.Border then frames.icon.Border:Show() end
-    else
-        if frames.icon then frames.icon:Hide() end
-        if frames.icon and frames.icon.Border then frames.icon.Border:Hide() end
-    end
-    
-    if frames.textBackground then
-        frames.textBackground:Show()
-        frames.textBackground:ClearAllPoints()
-        frames.textBackground:SetSize(frames.castbar:GetWidth(), unitType == "player" and 22 or 20)
-        frames.textBackground:SetPoint("TOP", frames.castbar, "BOTTOM", 0, unitType == "player" and 6 or 8)
-    end
-    
-    UpdateTimeText(unitType)
-    UpdateChannelTicks(frames.castbar, frames.ticks, name)
-    
-    --  FIX: Actualizar posición del spark con progreso real para channels
-    if frames.spark and frames.spark:IsShown() then
-        local progress = state.currentValue / state.maxValue
-        -- FIXED: Usar función consolidada que maneja la escala correctamente
-        UpdateCastbarVisuals(unitType, progress)
-    end
-    
-    if unitType ~= "player" and frames.shield and cfg and cfg.showIcon then
-        if notInterruptible and not isTradeSkill then
-            frames.shield:Show()
-        else
-            frames.shield:Hide()
-        end
-    end
-end
-
-function CastbarModule:HandleCastStop(unitType, isInterrupted)
     local state = self.states[unitType]
-    local frames = self.frames[unitType]
     
-    if not state.casting and not state.isChanneling then return end
+    if not (state.casting or state.isChanneling) then return end
     
     local cfg = GetConfig(unitType)
     if not cfg then return end
     
-    -- CRITICAL: Detectar automáticamente si fue interrupción real basado en progreso
-    local wasReallyInterrupted = isInterrupted
-    
-    -- Para target/focus, verificar si el cast se detuvo antes de completar
-    if not state.selfInterrupt and state.currentValue and state.maxValue then
-        local progress = state.currentValue / state.maxValue
-        -- Si el cast se detuvo con menos de 95% completado, probablemente fue interrupción
-        if progress < 0.95 then
-            wasReallyInterrupted = true
-        end
-    end
-    
-    if wasReallyInterrupted and not state.selfInterrupt then
-        -- Verdadera interrupción - mostrar fondo rojo
+    if wasInterrupted then
+        -- INTERRUPCIÓN: Mostrar textura completa sin deformación
         if frames.shield then frames.shield:Hide() end
         HideAllTicks(frames.ticks)
         
@@ -1046,8 +902,10 @@ function CastbarModule:HandleCastStop(unitType, isInterrupted)
         ForceStatusBarLayer(frames.castbar)
         frames.castbar:SetValue(state.maxValue)
         
-        if frames.castbar.UpdateTextureClipping then
-            frames.castbar:UpdateTextureClipping(1, false)
+        -- ✅ CRITICAL: Reset texture clipping para mostrar textura completa
+        local texture = frames.castbar:GetStatusBarTexture()
+        if texture then
+            texture:SetTexCoord(0, 1, 0, 1) -- Textura completa, sin recorte
         end
         
         SetCastText(unitType, "Interrupted")
@@ -1056,52 +914,26 @@ function CastbarModule:HandleCastStop(unitType, isInterrupted)
         state.isChanneling = false
         state.holdTime = cfg.holdTimeInterrupt or 0.8
     else
-        -- Completado naturalmente O selfInterrupt=true
-        -- FIXED: Usar mismo sistema de castSucceeded para todos los unit types
-        
-        -- Configurar visual de completion inmediatamente
+        -- COMPLETION: Normal con fade
         if frames.spark then frames.spark:Hide() end
         if frames.shield then frames.shield:Hide() end
-        if frames.flash then frames.flash:Show() end
         
         HideAllTicks(frames.ticks)
         
         state.casting = false
         state.isChanneling = false
-        state.castSucceeded = true
-        state.graceTime = 0  -- Reset grace time
-    end
-    
-    --  NUEVO: Reset flag al final (siempre)
-    state.selfInterrupt = false
-end
-
-function CastbarModule:FinishSpell(unitType)
-    local frames = self.frames[unitType]
-    local state = self.states[unitType]
-    local cfg = GetConfig(unitType)
-    
-    if state.maxValue then
-        frames.castbar:SetValue(state.maxValue)
-        state.currentValue = state.maxValue
         
-        if frames.castbar.UpdateTextureClipping then
-            frames.castbar:UpdateTextureClipping(1, state.isChanneling)
+        if frames.flash then
+            frames.flash:Show()
+            addon.core:ScheduleTimer(function()
+                if frames.flash then frames.flash:Hide() end
+            end, 0.3)
         end
         
-        UpdateTimeText(unitType)
+        state.holdTime = cfg.holdTime or 0.3
     end
-    
-    if frames.spark then frames.spark:Hide() end
-    if frames.shield then frames.shield:Hide() end
-    if frames.flash then frames.flash:Show() end
-    
-    HideAllTicks(frames.ticks)
-    
-    state.casting = false
-    state.isChanneling = false
-    state.holdTime = cfg and cfg.holdTime or 0.3
 end
+
 
 
 
@@ -1116,203 +948,68 @@ function CastbarModule:OnUpdate(unitType, castbar, elapsed)
     
     if not cfg or not cfg.enabled then return end
     
-    -- Para PLAYER, verificar si cast se interrumpió por pérdida de target o eventos de UI
-    if unitType == "player" and (state.casting or state.isChanneling) then
-        -- Verificación adicional: si player está casteando pero el servidor dice que no
-        local now = GetTime()
-        if (now - state.lastServerCheck) > 0.3 then  -- Reducido: cada 300ms para evitar micro-interrupciones
-            state.lastServerCheck = now
-            
-            local serverName, serverTexture, serverStartTime, serverEndTime
-            if state.casting and not state.isChanneling then
-                serverName, _, _, serverTexture, serverStartTime, serverEndTime = UnitCastingInfo("player")
-            elseif state.isChanneling then
-                serverName, _, _, serverTexture, serverStartTime, serverEndTime = UnitChannelInfo("player")
-            end
-            
-            -- Si no hay cast en servidor, el cast se interrumpió (target fuera de rango, mapa abierto, etc.)
-            if not serverName then
-                self:HideCastbar(unitType)
-                return
-            end
-            
-            -- NUEVO: Verificar si los tiempos del servidor cambiaron (pausa por mapa/UI)
-            if serverName == state.spellName and serverStartTime and serverEndTime then
-                local serverStart = serverStartTime / 1000
-                local serverEnd = serverEndTime / 1000
-                local serverDuration = serverEnd - serverStart
-                
-                -- Si la duración cambió significativamente, recalcular
-                if math.abs(serverDuration - state.maxValue) > 0.1 then
-                    state.maxValue = serverDuration
-                    state.startTime = serverStart
-                    state.endTime = serverEnd
-                    
-                    -- Recalcular progreso actual desde el servidor
-                    if state.casting and not state.isChanneling then
-                        local elapsed = now - serverStart
-                        state.currentValue = max(0, min(elapsed, serverDuration))
-                    else
-                        local remaining = serverEnd - now
-                        state.currentValue = max(0, min(remaining, serverDuration))
-                    end
-                    
-                    frames.castbar:SetMinMaxValues(0, state.maxValue)
-                    frames.castbar:SetValue(state.currentValue)
-                end
-            end
-        end
-    end
-
-    -- Validación robusta para target/focus (SKIP durante período de gracia)
-    if unitType ~= "player" and not state.castSucceeded then
-        if not UnitExists(unitType) then
-            if state.casting or state.isChanneling then
-                self:HideCastbar(unitType)
-            end
-            return
-        end
-        
-        --  Verificar GUID mismatch (target switching)
-        local currentGUID = UnitGUID(unitType)
-        if state.unitGUID and state.unitGUID ~= currentGUID then
-            if state.casting or state.isChanneling then
-                self:HideCastbar(unitType)
-            end
-            return
-        end
-        
-        --  Verificar si cast expiró por tiempo - SKIP durante período de gracia
-        if (state.casting or state.isChanneling) and state.endTime > 0 and not state.castSucceeded then
-            local now = GetTime()
-            if now > state.endTime then
-                -- El cast se completó naturalmente al alcanzar endTime
-                self:HandleCastStop(unitType, false)
-                return
-            end
-        end
-        
-        --  Verificación periódica del servidor (throttled) - SKIP durante período de gracia
-        if (state.casting or state.isChanneling) and not state.castSucceeded then
-            local now = GetTime()
-            if (now - state.lastServerCheck) > 0.2 then  -- Cada 200ms
-                state.lastServerCheck = now
-                
-                local serverName
-                if state.casting and not state.isChanneling then
-                    serverName = UnitCastingInfo(unitType)
-                elseif state.isChanneling then
-                    serverName = UnitChannelInfo(unitType)
-                end
-                
-                -- Si no hay cast en servidor, verificar si fue interrupción
-                if not serverName then
-                    -- Si el cast desapareció antes de completarse, tratarlo como interrupción
-                    if state.currentValue and state.maxValue and (state.currentValue / state.maxValue) < 0.95 then
-                        self:HandleCastStop(unitType, true)  -- Tratar como interrupción
-                    else
-                        self:HandleCastStop(unitType, false)  -- Tratar como completion natural
-                    end
-                    return
-                end
-            end
-        end
-    end
+    local currentTime = GetTime()
     
-    -- Handle success grace period (all unit types)
-    if state.castSucceeded then
-        state.currentValue = state.isChanneling and 0 or state.maxValue
-        castbar:SetValue(state.maxValue)
+    if state.casting or state.isChanneling then
+        local value, progress
         
-        if castbar.UpdateTextureClipping then
-            castbar:UpdateTextureClipping(1, state.isChanneling)
+        if state.casting then
+            -- Cast normal: progreso hacia adelante (0 -> 1)
+            local elapsed = min(currentTime, state.endTime) - state.startTime
+            value = elapsed
+            progress = elapsed / state.maxValue -- 0 -> 1
+        else
+            -- Channel: progreso hacia atrás (maxValue -> 0)
+            local remaining = state.endTime - currentTime
+            value = max(0, remaining) -- El valor de la barra (tiempo restante)
+            progress = value / state.maxValue -- 1 -> 0 para texture clipping
         end
         
+        -- Validar expiración
+        if currentTime > state.endTime then
+            self:HandleCastStop_Simple(unitType, false)
+            return
+        end
+        
+        -- ✅ CORREGIDO: SetValue correcto para cada tipo
+        castbar:SetValue(value)
+        
+        -- ✅ TEXTURE CLIPPING: Una sola llamada en OnUpdate
+        if frames.castbar.UpdateTextureClipping then
+            frames.castbar:UpdateTextureClipping(progress, state.isChanneling)
+        end
+        
+        -- ✅ SPARK: Sincronizado con TextureClipping
+        if frames.spark and frames.spark:IsShown() then
+            local actualWidth = castbar:GetWidth() * progress
+            frames.spark:ClearAllPoints()
+            frames.spark:SetPoint('CENTER', castbar, 'LEFT', actualWidth, 0)
+        end
+        
+        -- ✅ ACTUALIZAR STATE: Mantener sincronizado
+        state.currentValue = value
+        
+        -- Actualizar texto de tiempo
         UpdateTimeText(unitType)
         
-        if frames.spark and frames.spark:IsShown() then
-            -- FIXED: Usar escala correcta al posicionar spark al final
-            local castbarScale = castbar:GetScale() or 1
-            local finalWidth = castbar:GetWidth() * castbarScale
-            frames.spark:ClearAllPoints()
-            frames.spark:SetPoint('CENTER', castbar, 'LEFT', finalWidth / castbarScale, 0)
-        end
+        -- ✅ ADDED: Asegurar que los ticks de channel permanezcan visibles
+        -- NO llamar HideAllTicks aquí durante channeling activo
         
-        state.graceTime = state.graceTime + elapsed
-        if state.graceTime >= GRACE_PERIOD_AFTER_SUCCESS then
-            self:FinishSpell(unitType)
-            state.castSucceeded = false
-            state.graceTime = 0
-        end
-        return
-    end
-    
-    -- Handle hold time
-    if state.holdTime > 0 then
+    elseif state.holdTime > 0 then
+        -- Fade out después de completar
         state.holdTime = state.holdTime - elapsed
         if state.holdTime <= 0 then
             self:HideCastbar(unitType)
         end
-        return
-    end
-    
-    -- Update casting/channeling
-    if state.casting or state.isChanneling then
-        -- MEJORADO: Calcular progreso basado en tiempo del servidor para mayor precisión
-        local now = GetTime()
-        local shouldUpdateFromTime = false
-        
-        -- Para player, usar tiempo del servidor cuando sea posible
-        if unitType == "player" and state.startTime > 0 and state.endTime > 0 then
-            if state.casting and not state.isChanneling then
-                local elapsed = now - state.startTime
-                local serverProgress = max(0, min(elapsed, state.maxValue))
-                -- Solo actualizar si la diferencia es significativa (evita micro-actualizaciones)
-                if math.abs(serverProgress - state.currentValue) > 0.01 then
-                    state.currentValue = serverProgress
-                    shouldUpdateFromTime = true
-                end
-            elseif state.isChanneling then
-                local remaining = state.endTime - now
-                local serverProgress = max(0, min(remaining, state.maxValue))
-                if math.abs(serverProgress - state.currentValue) > 0.01 then
-                    state.currentValue = serverProgress
-                    shouldUpdateFromTime = true
-                end
-            end
-        end
-        
-        -- Fallback: actualización incremental normal si no hay datos del servidor
-        if not shouldUpdateFromTime then
-            if state.casting and not state.isChanneling then
-                state.currentValue = min(state.currentValue + elapsed, state.maxValue)
-            elseif state.isChanneling then
-                state.currentValue = max(state.currentValue - elapsed, 0)
-            end
-        end
-        
-        castbar:SetValue(state.currentValue)
-        
-        local progress = state.maxValue > 0 and (state.currentValue / state.maxValue) or 0
-        
-        -- Usar función consolidada para evitar parpadeo por múltiples actualizaciones
-        UpdateCastbarVisuals(unitType, progress)
-        
-        UpdateTimeText(unitType)
-        
-        if frames.flash and not state.castSucceeded then
-            frames.flash:Hide()
-        end
     end
 end
+
 
 -- ============================================================================
 -- CASTBAR REFRESH
 -- ============================================================================
 
 function CastbarModule:RefreshCastbar(unitType)
-
-    
     local cfg = GetConfig(unitType)
     if not cfg then return end
     
@@ -1438,7 +1135,9 @@ function CastbarModule:RefreshCastbar(unitType)
     if frames.ticks then
         for i = 1, MAX_TICKS do
             if frames.ticks[i] then
-                frames.ticks[i]:SetSize(3, (cfg.sizeY or 16) - 2)
+                -- ✅ CRITICAL: Usar la altura REAL del castbar después de SetSize/SetScale
+                local realHeight = frames.castbar:GetHeight()
+                frames.ticks[i]:SetSize(3, max(realHeight - 2, 10))
             end
         end
     end
@@ -1505,179 +1204,110 @@ function CastbarModule:HandleCastingEvent(event, unit)
     if unit == "player" then
         unitType = "player"
     elseif unit == "target" then
-        unitType = "target"
+        unitType = "target" 
     elseif unit == "focus" then
         unitType = "focus"
     else
         return
     end
     
-    if not IsEnabled(unitType) then 
-        return 
-    end
-    
-    -- ANTI-EVENTOS-CRUZADOS: Prevenir que target/focus procesen eventos del player
-    if unitType ~= "player" then
-        local playerGUID = UnitGUID("player")
-        local unitGUID = UnitGUID(unit)
-        
-        -- Si target/focus son el mismo player, solo permitir eventos START para mostrar la barra
-        -- Eventos STOP/FAILED serán manejados solo por player castbar
-        if playerGUID and unitGUID and playerGUID == unitGUID then
-            if event == "UNIT_SPELLCAST_STOP" or event == "UNIT_SPELLCAST_CHANNEL_STOP" or 
-               event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED" then
-                -- Ignorar eventos de finalización cuando target/focus = player
-                return
-            end
-        end
-    end
+    if not IsEnabled(unitType) then return end
     
     HideBlizzardCastbar(unitType)
     
-    --  Verificar GUID para todos los eventos (excepto player)
+    -- SIMPLIFICADO: Solo verificar GUID básico para target/focus
     if unitType ~= "player" then
-        local state = self.states[unitType]
-        local currentGUID = UnitGUID(unit)
+        local statusBar = self.frames[unitType]
+        if not statusBar.castbar then return end
         
-        -- Si tenemos un cast activo pero el GUID cambió, ignorar el evento
-        if (state.casting or state.isChanneling) and state.unitGUID and state.unitGUID ~= currentGUID then
-            return
-        end
-        
-        -- Actualizar GUID para futuras verificaciones
-        if currentGUID then
-            state.unitGUID = currentGUID
-        end
-    end
-    
-    if event == 'UNIT_SPELLCAST_START' then
-        self:HandleCastStart(unitType, unit)
-    elseif event == 'UNIT_SPELLCAST_SUCCEEDED' and unitType == "player" then
-        local state = self.states[unitType]
-        if state.casting or state.isChanneling then
-            state.castSucceeded = true
-        end
-    elseif event == 'UNIT_SPELLCAST_CHANNEL_START' then
-        self:HandleChannelStart(unitType, unit)
-    elseif event == 'UNIT_SPELLCAST_STOP' or event == 'UNIT_SPELLCAST_CHANNEL_STOP' then
-        --   Verificar que el evento corresponde al cast actual
-        local state = self.states[unitType]
-        
-        -- CRITICAL: Si ya estamos en período de gracia (cast ya completado), ignorar este evento
-        if state.castSucceeded then
-            return
-        end
-        
-        --  Verificar GUID para evitar eventos de units incorrectos
-        if unitType ~= "player" then
-            local currentGUID = UnitGUID(unit)
-            if not currentGUID or state.unitGUID ~= currentGUID then
+        -- COMO RETAILUI: Almacenar GUID en el frame
+        if event == 'UNIT_SPELLCAST_START' or event == 'UNIT_SPELLCAST_CHANNEL_START' then
+            statusBar.castbar.unit = UnitGUID(unit)
+        else
+            -- COMO RETAILUI: Verificar GUID solo en eventos STOP
+            if statusBar.castbar.unit ~= UnitGUID(unit) then
                 return
             end
         end
-        
-        -- Para channels, marcar como terminado naturalmente
-        if event == 'UNIT_SPELLCAST_CHANNEL_STOP' and state.isChanneling then
-            state.selfInterrupt = true
-        end
-        
-        -- CRITICAL: No asumir que STOP = completado naturalmente
-        -- Dejar que HandleCastStop determine si fue interrupción basado en progreso
-        self:HandleCastStop(unitType, false)
-    elseif event == 'UNIT_SPELLCAST_FAILED' then
-        --  NUEVO: Manejo de fallos 
-        local state = self.states[unitType]
-        if unitType == "player" then
-            state.castSucceeded = false
-        else
-            self:FinishSpell(unitType)
-        end
-    elseif event == 'UNIT_SPELLCAST_INTERRUPTED' then
-        self:HandleCastStop(unitType, true)
-        -- NUEVO: Manejo de delays/pushbacks
-    elseif event == 'UNIT_SPELLCAST_DELAYED' or event == 'UNIT_SPELLCAST_CHANNEL_UPDATE' then
-        self:HandleCastDelayed(unitType, unit)
-    end  -- Verdadera interrupción   
+    end
     
-    -- NOTA: La protección anti-eventos-cruzados previene que target/focus procesen
-    -- eventos STOP/FAILED cuando son el mismo player, evitando desapariciones erróneas
+    -- SIMPLIFICADO: Manejo directo de eventos sin estados complejos
+    if event == 'UNIT_SPELLCAST_START' then
+        self:HandleCastStart_Simple(unitType, unit, false)
+    elseif event == 'UNIT_SPELLCAST_CHANNEL_START' then
+        self:HandleCastStart_Simple(unitType, unit, true)
+    elseif event == 'UNIT_SPELLCAST_STOP' or event == 'UNIT_SPELLCAST_CHANNEL_STOP' then
+        self:HandleCastStop_Simple(unitType, false)
+    elseif event == 'UNIT_SPELLCAST_FAILED' then
+        self:HandleCastStop_Simple(unitType, false)
+    elseif event == 'UNIT_SPELLCAST_INTERRUPTED' then
+        self:HandleCastStop_Simple(unitType, true)
+    elseif event == 'UNIT_SPELLCAST_DELAYED' or event == 'UNIT_SPELLCAST_CHANNEL_UPDATE' then
+        self:HandleCastDelayed_Simple(unitType, unit)
+    end
 end
 
 function CastbarModule:HandleTargetChanged()
-    local state = self.states.target
+    local frames = self.frames.target
+    local statusBar = frames.castbar
     
-    --  Guardar GUID anterior para comparación
-    local oldGUID = state.unitGUID
-    local newGUID = UnitExists("target") and UnitGUID("target") or nil
+    if not statusBar then return end
     
-    --  Si cambió target, SIEMPRE ocultar inmediatamente
-    if oldGUID ~= newGUID then
-        self:HideCastbar("target")
-        state.unitGUID = newGUID
+    -- ✅ FIXED: Limpiar estado siempre que el GUID no coincida
+    if UnitExists("target") and statusBar.unit == UnitGUID("target") then
+        -- Same target, check if cast should still be visible
+        if GetTime() > (self.states.target.endTime or 0) then
+            self:HideCastbar("target")  -- ← Usar HideCastbar para limpieza completa
+        else
+            statusBar:Show()
+        end
+    else
+        -- Different target or no target - CLEAN EVERYTHING
+        self:HideCastbar("target")  -- ← CRITICAL: Limpiar estado completo
     end
     
     HideBlizzardCastbar("target")
     
-    -- Sistema de caché simplificado - eliminadas referencias complejas
-    -- self.auraCache.target.lastUpdate = 0
-    -- self.auraCache.target.lastGUID = newGUID
-    
-    --  Solo proceder si hay target válido
+    -- Check if new target has active cast
     if UnitExists("target") and IsEnabled("target") then
-        --  Verificar que target no cambió durante el delay
-        addon.core:ScheduleTimer(function()
-            -- Double-check: asegurar que el target sigue siendo el mismo
-            if UnitGUID("target") == newGUID then
-                if UnitCastingInfo("target") then
-                    state.unitGUID = newGUID  -- Establecer GUID antes del evento
-                    self:HandleCastingEvent('UNIT_SPELLCAST_START', "target")
-                elseif UnitChannelInfo("target") then
-                    state.unitGUID = newGUID  -- Establecer GUID antes del evento
-                    self:HandleCastingEvent('UNIT_SPELLCAST_CHANNEL_START', "target")
-                end
-                ApplyTargetAuraOffset()
-            end
-        end, 0.05)
-    else
-        --  Asegurar limpieza si no hay target
-        state.unitGUID = nil
+        if UnitCastingInfo("target") then
+            self:HandleCastingEvent('UNIT_SPELLCAST_START', "target")
+        elseif UnitChannelInfo("target") then
+            self:HandleCastingEvent('UNIT_SPELLCAST_CHANNEL_START', "target")
+        end
+        ApplyTargetAuraOffset()
     end
 end
 
 function CastbarModule:HandleFocusChanged()
-    local state = self.states.focus
+    local frames = self.frames.focus
+    local statusBar = frames.castbar
     
-    --  Guardar GUID anterior para comparación
-    local oldGUID = state.unitGUID
-    local newGUID = UnitExists("focus") and UnitGUID("focus") or nil
+    if not statusBar then return end
     
-    --  Si cambió focus, SIEMPRE ocultar inmediatamente
-    if oldGUID ~= newGUID then
-        self:HideCastbar("focus")
-        state.unitGUID = newGUID
+    -- ✅ FIXED: Misma lógica para focus
+    if UnitExists("focus") and statusBar.unit == UnitGUID("focus") then
+        -- Same focus, check if cast should still be visible
+        if GetTime() > (self.states.focus.endTime or 0) then
+            self:HideCastbar("focus")  -- ← Usar HideCastbar para limpieza completa
+        else
+            statusBar:Show()
+        end
+    else
+        -- Different focus or no focus - CLEAN EVERYTHING
+        self:HideCastbar("focus")  -- ← CRITICAL: Limpiar estado completo
     end
     
     HideBlizzardCastbar("focus")
     
-    --  Solo proceder si hay focus válido
+    -- Check if new focus has active cast
     if UnitExists("focus") and IsEnabled("focus") then
-        --  Verificar que focus no cambió durante el delay
-        addon.core:ScheduleTimer(function()
-            -- Double-check: asegurar que el focus sigue siendo el mismo
-            if UnitGUID("focus") == newGUID then
-                if UnitCastingInfo("focus") then
-                    state.unitGUID = newGUID  -- Establecer GUID antes del evento
-                    self:HandleCastingEvent('UNIT_SPELLCAST_START', "focus")
-                elseif UnitChannelInfo("focus") then
-                    state.unitGUID = newGUID  -- Establecer GUID antes del evento
-                    self:HandleCastingEvent('UNIT_SPELLCAST_CHANNEL_START', "focus")
-                end
-                ApplyFocusAuraOffset()
-            end
-        end, 0.05)
-    else
-        --  Asegurar limpieza si no hay focus
-        state.unitGUID = nil
+        if UnitCastingInfo("focus") then
+            self:HandleCastingEvent('UNIT_SPELLCAST_START', "focus")
+        elseif UnitChannelInfo("focus") then
+            self:HandleCastingEvent('UNIT_SPELLCAST_CHANNEL_START', "focus")
+        end
+        ApplyFocusAuraOffset()
     end
 end
 
@@ -1685,60 +1315,31 @@ end
 -- Función de manejo de delays 
 -- ============================================================================
 
-function CastbarModule:HandleCastDelayed(unitType, unit)
+function CastbarModule:HandleCastDelayed_Simple(unitType, unit)
     local state = self.states[unitType]
-    local frames = self.frames[unitType]
     
-    -- Solo procesar si estamos casting/channeling
-    if not state.casting and not state.isChanneling then return end
+    if not (state.casting or state.isChanneling) then return end
     
-    local name, _, _, iconTex, startTime, endTime
+    local spell, startTime, endTime
     
-    -- Obtener nueva información del servidor
-    if state.casting and not state.isChanneling then
-        name, _, _, iconTex, startTime, endTime = UnitCastingInfo(unit)
-    elseif state.isChanneling then
-        name, _, _, iconTex, startTime, endTime = UnitChannelInfo(unit)
-    end
-    
-    -- Verificar que sigue siendo el mismo spell
-    if not name or name ~= state.spellName then return end
-    
-    -- Actualizar tiempos desde el servidor
-    local start, finish, duration = ParseCastTimes(startTime, endTime)
-    state.maxValue = duration
-    
-    -- Recalcular progreso actual
-    local currentTime = GetTime()
-    
-    if state.casting and not state.isChanneling then
-        -- Casting: progreso desde inicio
-        local elapsed = currentTime - start
-        state.currentValue = max(0, min(elapsed, duration))
+    if state.casting then
+        spell, _, _, _, startTime, endTime = UnitCastingInfo(unit)
     else
-        -- Channeling: tiempo restante
-        local remaining = finish - currentTime
-        state.currentValue = max(0, min(remaining, duration))
+        spell, _, _, _, startTime, endTime = UnitChannelInfo(unit)
     end
     
-    -- Actualizar barra inmediatamente
+    if not spell or spell ~= state.spellName then
+        self:HideCastbar(unitType)
+        return
+    end
+    
+    -- Update times only
+    state.startTime = startTime / 1000
+    state.endTime = endTime / 1000
+    state.maxValue = state.endTime - state.startTime
+    
+    local frames = self.frames[unitType]
     frames.castbar:SetMinMaxValues(0, state.maxValue)
-    frames.castbar:SetValue(state.currentValue)
-    
-    -- Actualizar elementos visuales
-    local progress = state.maxValue > 0 and (state.currentValue / state.maxValue) or 0
-    if frames.castbar.UpdateTextureClipping then
-        frames.castbar:UpdateTextureClipping(progress, state.isChanneling)
-    end
-    
-    -- Actualizar spark
-    if frames.spark and frames.spark:IsShown() then
-        local actualWidth = frames.castbar:GetWidth() * progress
-        frames.spark:ClearAllPoints()
-        frames.spark:SetPoint('CENTER', frames.castbar, 'LEFT', actualWidth, 0)
-    end
-    
-    UpdateTimeText(unitType)
 end
 
 -- ============================================================================
