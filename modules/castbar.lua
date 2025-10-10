@@ -639,53 +639,6 @@ end
 -- CASTBAR CREATION
 -- ============================================================================
 
-local function CreateTextElements(parent, unitType)
-    local fontSize = unitType == "player" and 'GameFontHighlight' or 'GameFontHighlightSmall'
-    local elements = {}
-
-    -- Main cast text
-    elements.castText = parent:CreateFontString(nil, 'OVERLAY', fontSize)
-    elements.castText:SetPoint('BOTTOMLEFT', parent, 'BOTTOMLEFT', unitType == "player" and 8 or 6, 2)
-    elements.castText:SetJustifyH("LEFT")
-
-    -- Compact cast text
-    elements.castTextCompact = parent:CreateFontString(nil, 'OVERLAY', fontSize)
-    elements.castTextCompact:SetPoint('BOTTOMLEFT', parent, 'BOTTOMLEFT', unitType == "player" and 8 or 6, 2)
-    elements.castTextCompact:SetJustifyH("LEFT")
-    elements.castTextCompact:Hide()
-
-    -- Centered text for simple mode
-    elements.castTextCentered = parent:CreateFontString(nil, 'OVERLAY', fontSize)
-    elements.castTextCentered:SetPoint('BOTTOM', parent, 'BOTTOM', 0, 1)
-    elements.castTextCentered:SetPoint('LEFT', parent, 'LEFT', unitType == "player" and 8 or 6, 0)
-    elements.castTextCentered:SetPoint('RIGHT', parent, 'RIGHT', unitType == "player" and -8 or -6, 0)
-    elements.castTextCentered:SetJustifyH("CENTER")
-    elements.castTextCentered:Hide()
-
-    -- Time text
-    elements.castTimeText = parent:CreateFontString(nil, 'OVERLAY', fontSize)
-    elements.castTimeText:SetPoint('BOTTOMRIGHT', parent, 'BOTTOMRIGHT', unitType == "player" and -8 or -6, 2)
-    elements.castTimeText:SetJustifyH("RIGHT")
-
-    -- Compact time text
-    elements.castTimeTextCompact = parent:CreateFontString(nil, 'OVERLAY', fontSize)
-    elements.castTimeTextCompact:SetPoint('BOTTOMRIGHT', parent, 'BOTTOMRIGHT', unitType == "player" and -8 or -6, 2)
-    elements.castTimeTextCompact:SetJustifyH("RIGHT")
-    elements.castTimeTextCompact:Hide()
-
-    -- Player-specific time elements
-    if unitType == "player" then
-        elements.timeValue = parent:CreateFontString(nil, 'OVERLAY', fontSize)
-        elements.timeValue:SetPoint('BOTTOMRIGHT', parent, 'BOTTOMRIGHT', -50, 2)
-        elements.timeValue:SetJustifyH("RIGHT")
-
-        elements.timeMax = parent:CreateFontString(nil, 'OVERLAY', fontSize)
-        elements.timeMax:SetPoint('LEFT', elements.timeValue, 'RIGHT', 2, 0)
-        elements.timeMax:SetJustifyH("LEFT")
-    end
-
-    return elements
-end
 local function CreateCastbar(unitType)
     if CastbarModule.frames[unitType].castbar then
         return
@@ -704,7 +657,7 @@ local function CreateCastbar(unitType)
 
     -- Main StatusBar (as child of container)
     frames.castbar = CreateFrame('StatusBar', frameName, frames.container)
-    frames.castbar:SetFrameLevel(1)  -- Relative to container
+    frames.castbar:SetFrameLevel(2)  -- Above textBackground
     frames.castbar:SetAllPoints(frames.container)  -- Fill entire container
     frames.castbar:SetMinMaxValues(0, 1)
     frames.castbar:SetValue(0)
@@ -748,6 +701,94 @@ local function CreateCastbar(unitType)
     frames.flash:SetAllPoints()
     frames.flash:Hide()
 
+   -- Text background frame y elementos de texto (as child of container)
+    frames.textBackground = CreateFrame('Frame', frameName .. 'TextBG', frames.container)
+    frames.textBackground:SetFrameLevel(1)  -- Below castbar
+
+    local textBg = frames.textBackground:CreateTexture(nil, 'BACKGROUND')
+    if unitType == "player" then
+        textBg:SetTexture(TEXTURES.atlas)
+        textBg:SetTexCoord(0.001953125, 0.410109375, 0.00390625, 0.11328125)
+    else
+        textBg:SetTexture(TEXTURES.atlasSmall)
+        textBg:SetTexCoord(unpack(UV_COORDS.textBorder))
+    end
+    textBg:SetAllPoints()
+
+    -- Create text elements with original styling and positioning
+    if unitType == "player" then
+        -- Player castbar text elements (estilo original con GameFontHighlight)
+        frames.castText = frames.textBackground:CreateFontString(nil, 'OVERLAY', 'GameFontHighlight')
+        frames.castText:SetPoint('BOTTOMLEFT', frames.textBackground, 'BOTTOMLEFT', 8, 2)
+        frames.castText:SetJustifyH("LEFT")
+        frames.castText:Hide()
+        
+        frames.castTextCentered = frames.textBackground:CreateFontString(nil, 'OVERLAY', 'GameFontHighlight')
+        frames.castTextCentered:SetPoint('BOTTOM', frames.textBackground, 'BOTTOM', 0, 1)
+        frames.castTextCentered:SetPoint('LEFT', frames.textBackground, 'LEFT', 8, 0)
+        frames.castTextCentered:SetPoint('RIGHT', frames.textBackground, 'RIGHT', -8, 0)
+        frames.castTextCentered:SetJustifyH("CENTER")
+        frames.castTextCentered:Hide()
+        
+        frames.timeValue = frames.textBackground:CreateFontString(nil, 'OVERLAY', 'GameFontHighlight')
+        frames.timeValue:SetPoint('BOTTOMRIGHT', frames.textBackground, 'BOTTOMRIGHT', -50, 2)
+        frames.timeValue:SetJustifyH("RIGHT")
+        frames.timeValue:Hide()
+        
+        frames.timeMax = frames.textBackground:CreateFontString(nil, 'OVERLAY', 'GameFontHighlight')
+        frames.timeMax:SetPoint('LEFT', frames.timeValue, 'RIGHT', 2, 0)
+        frames.timeMax:SetJustifyH("LEFT")
+        frames.timeMax:Hide()
+    else
+        -- Target/Focus castbar text elements (estilo original con GameFontHighlightSmall)
+        frames.castText = frames.textBackground:CreateFontString(nil, 'OVERLAY', 'GameFontHighlightSmall')
+        frames.castText:SetPoint('BOTTOMLEFT', frames.textBackground, 'BOTTOMLEFT', 6, 2)
+        frames.castText:SetJustifyH("LEFT")
+        frames.castText:Hide()
+        
+        frames.castTextCentered = frames.textBackground:CreateFontString(nil, 'OVERLAY', 'GameFontHighlightSmall')
+        frames.castTextCentered:SetPoint('BOTTOM', frames.textBackground, 'BOTTOM', 0, 1)
+        frames.castTextCentered:SetPoint('LEFT', frames.textBackground, 'LEFT', 6, 0)
+        frames.castTextCentered:SetPoint('RIGHT', frames.textBackground, 'RIGHT', -6, 0)
+        frames.castTextCentered:SetJustifyH("CENTER")
+        frames.castTextCentered:Hide()
+        
+        frames.castTextCompact = frames.textBackground:CreateFontString(nil, 'OVERLAY', 'GameFontHighlightSmall')
+        frames.castTextCompact:SetPoint('BOTTOMLEFT', frames.textBackground, 'BOTTOMLEFT', 6, 2)
+        frames.castTextCompact:SetJustifyH("LEFT")
+        frames.castTextCompact:Hide()
+        
+        frames.castTimeText = frames.textBackground:CreateFontString(nil, 'OVERLAY', 'GameFontHighlightSmall')
+        frames.castTimeText:SetPoint('BOTTOMRIGHT', frames.textBackground, 'BOTTOMRIGHT', -6, 2)
+        frames.castTimeText:SetJustifyH("RIGHT")
+        frames.castTimeText:Hide()
+        
+        frames.castTimeTextCompact = frames.textBackground:CreateFontString(nil, 'OVERLAY', 'GameFontHighlightSmall')
+        frames.castTimeTextCompact:SetPoint('BOTTOMRIGHT', frames.textBackground, 'BOTTOMRIGHT', -6, 2)
+        frames.castTimeTextCompact:SetJustifyH("RIGHT")
+        frames.castTimeTextCompact:Hide()
+    end
+
+    -- Background frame (as child of container)
+    if unitType ~= "player" then
+        frames.background = CreateFrame('Frame', frameName .. 'Background', frames.container)
+        frames.background:SetFrameLevel(0)  -- Behind everything in container
+        frames.background:SetAllPoints(frames.castbar)
+    else
+        frames.background = frames.textBackground
+    end
+
+    -- SPARK: Create as child of container with highest frame level to be on top of everything
+    frames.spark = CreateFrame("Frame", frameName .. "Spark", frames.container)
+    frames.spark:SetFrameLevel(5)  -- Highest level - above castbar(1), textBackground(2), and all other elements
+    frames.spark:SetSize(16, 16)
+    frames.spark:Hide()
+    
+    local sparkTexture = frames.spark:CreateTexture(nil, 'OVERLAY')
+    sparkTexture:SetTexture(TEXTURES.spark)
+    sparkTexture:SetAllPoints()
+    sparkTexture:SetBlendMode('ADD')
+
     -- Icon y otros elementos...
     frames.icon = frames.castbar:CreateTexture(frameName .. "Icon", 'ARTWORK')
     frames.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
@@ -768,35 +809,6 @@ local function CreateCastbar(unitType)
 
     -- Apply texture clipping system
     CreateTextureClipping(frames.castbar)
-
-    -- Text background frame y elementos de texto (as child of container)
-    frames.textBackground = CreateFrame('Frame', frameName .. 'TextBG', frames.container)
-    frames.textBackground:SetFrameLevel(2)  -- Relative to container
-
-    local textBg = frames.textBackground:CreateTexture(nil, 'BACKGROUND')
-    if unitType == "player" then
-        textBg:SetTexture(TEXTURES.atlas)
-        textBg:SetTexCoord(0.001953125, 0.410109375, 0.00390625, 0.11328125)
-    else
-        textBg:SetTexture(TEXTURES.atlasSmall)
-        textBg:SetTexCoord(unpack(UV_COORDS.textBorder))
-    end
-    textBg:SetAllPoints()
-
-    -- Create text elements
-    local textElements = CreateTextElements(frames.textBackground, unitType)
-    for key, element in pairs(textElements) do
-        frames[key] = element
-    end
-
-    -- Background frame (as child of container)
-    if unitType ~= "player" then
-        frames.background = CreateFrame('Frame', frameName .. 'Background', frames.container)
-        frames.background:SetFrameLevel(0)  -- Behind everything in container
-        frames.background:SetAllPoints(frames.castbar)
-    else
-        frames.background = frames.textBackground
-    end
 
     -- OnUpdate handler
     frames.castbar:SetScript('OnUpdate', function(self, elapsed)
@@ -1078,7 +1090,6 @@ end
 -- ============================================================================
 -- CASTBAR REFRESH
 -- ============================================================================
-
 function CastbarModule:RefreshCastbar(unitType)
     local cfg = GetConfig(unitType)
     if not cfg then
@@ -1140,22 +1151,7 @@ function CastbarModule:RefreshCastbar(unitType)
     frames.container:SetSize(cfg.sizeX or 200, cfg.sizeY or 16)
     frames.container:SetScale(cfg.scale or 1)  -- Apply scale to container, not individual castbar
 
-    -- Create spark if needed
-    if not frames.spark then
-        frames.spark = CreateFrame("Frame", frameName .. "Spark", UIParent)
-        frames.spark:SetFrameStrata("MEDIUM")
-        frames.spark:SetFrameLevel(11)
-        frames.spark:SetSize(16, 16)
-        frames.spark:Hide()
-
-        local sparkTexture = frames.spark:CreateTexture(nil, 'ARTWORK')
-        sparkTexture:SetTexture(TEXTURES.spark)
-        sparkTexture:SetAllPoints()
-        sparkTexture:SetBlendMode('ADD')
-    end
-
-    -- Spark needs its own scale (not inside container)
-    frames.spark:SetScale(cfg.scale or 1)
+    -- REMOVED: Old spark creation code - now spark is created inside CreateCastbar as child of container
 
     -- Position text background
     if frames.textBackground then
@@ -1195,12 +1191,11 @@ function CastbarModule:RefreshCastbar(unitType)
         end
     end
 
-    -- Update spark size
+    -- FIXED: Update spark size - now it's inside container so no separate scaling needed
     if frames.spark then
         local sparkSize = cfg.sizeY or 16
         frames.spark:SetSize(sparkSize, sparkSize * 2)
-        -- Spark needs its own scale (not inside container)
-        frames.spark:SetScale(cfg.scale or 1)
+        -- Spark scaling now handled by container scale automatically
     end
 
     -- Update tick sizes
@@ -1219,13 +1214,16 @@ function CastbarModule:RefreshCastbar(unitType)
         SetTextMode(unitType, cfg.text_mode or "simple")
     end
 
-    -- Ensure proper frame levels
-    frames.castbar:SetFrameLevel(10)
+    -- Ensure proper frame levels - SPARK MUST BE ON TOP
+    frames.castbar:SetFrameLevel(2)  -- Above textBackground
     if frames.background then
-        frames.background:SetFrameLevel(9)
+        frames.background:SetFrameLevel(0)  -- Behind everything
     end
     if frames.textBackground then
-        frames.textBackground:SetFrameLevel(9)
+        frames.textBackground:SetFrameLevel(1)  -- Below castbar
+    end
+    if frames.spark then
+        frames.spark:SetFrameLevel(5)  -- HIGHEST - Above everything else
     end
 
     HideBlizzardCastbar(unitType)
