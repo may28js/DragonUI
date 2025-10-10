@@ -1,9 +1,9 @@
 local addon = select(2, ...)
 
+
+-- ============================================================================
 -- CASTBAR MODULE FOR DRAGONUI
 -- Original code by Neticsoul
--- ============================================================================
--- CASTBAR MODULE - OPTIMIZED FOR WOW 3.3.5A
 -- ============================================================================
 
 local _G = _G
@@ -14,10 +14,6 @@ local GetTime = GetTime
 local UnitExists, UnitGUID = UnitExists, UnitGUID
 local UnitCastingInfo, UnitChannelInfo = UnitCastingInfo, UnitChannelInfo
 local UnitAura, GetSpellTexture, GetSpellInfo = UnitAura, GetSpellTexture, GetSpellInfo
-
--- ============================================================================
--- MODULE CONSTANTS
--- ============================================================================
 
 local TEXTURE_PATH = "Interface\\AddOns\\DragonUI\\Textures\\CastbarOriginal\\"
 local TEXTURES = {
@@ -67,41 +63,13 @@ local MAX_TICKS = 15
 -- ============================================================================
 
 local CastbarModule = {
-    states = {},
     frames = {},
-    lastRefreshTime = {},
-    auraCache = {
-        target = {
-            lastUpdate = 0,
-            lastRows = 0,
-            lastOffset = 0,
-            lastGUID = nil
-        },
-        focus = {
-            lastUpdate = 0,
-            lastRows = 0,
-            lastOffset = 0,
-            lastGUID = nil
-        }
-    }
+    initialized = false
 }
 
--- Initialize states for each castbar type
+-- Initialize frames for each castbar type (RetailUI pattern: statusBar flags only)
 for _, unitType in ipairs({"player", "target", "focus"}) do
-    CastbarModule.states[unitType] = {
-        casting = false,
-        isChanneling = false,
-        currentValue = 0,
-        maxValue = 0,
-        spellName = "",
-        holdTime = 0,
-        castSucceeded = false,
-        unitGUID = nil,
-        endTime = 0,
-        startTime = 0
-    }
     CastbarModule.frames[unitType] = {}
-    CastbarModule.lastRefreshTime[unitType] = 0
 end
 
 -- ============================================================================
@@ -166,6 +134,78 @@ local function ParseCastTimes(startTime, endTime)
 end
 
 -- ============================================================================
+-- FADE SYSTEM - Intelligent fade management following RetailUI pattern
+-- ============================================================================
+
+local function RestoreCastbarVisibility(unitType)
+    local frames = CastbarModule.frames[unitType]
+    if not frames then return end
+    
+    -- Ensure container exists before trying to show it
+    if not frames.container then
+        CreateCastbar(unitType)
+    end
+    
+    -- RetailUI pattern: Cancel any active fades and restore full visibility on container
+    local container = frames.container
+    if container then
+        UIFrameFadeRemoveFrame(container)
+        container:SetAlpha(1.0)
+        container.fadeOutEx = false
+        container:Show()  -- Ensure container is visible
+    end
+    
+    -- CRITICAL: Also cancel fade on the castbar itself in case it was set
+    local castbar = frames.castbar
+    if castbar then
+        UIFrameFadeRemoveFrame(castbar)
+        castbar:SetAlpha(1.0)
+        castbar.fadeOutEx = false
+    end
+    
+    -- Restore all text elements that should be visible
+    local textElements = {
+        frames.castText, frames.castTextCompact, frames.castTextCentered, 
+        frames.castTimeText, frames.castTimeTextCompact
+    }
+    
+    for _, element in ipairs(textElements) do
+        if element then
+            UIFrameFadeRemoveFrame(element)
+            element:SetAlpha(1.0)
+        end
+    end
+    
+    -- Restore textBackground if it exists
+    if frames.textBackground then
+        UIFrameFadeRemoveFrame(frames.textBackground)
+        frames.textBackground:SetAlpha(1.0)
+    end
+    
+    -- Restore other elements
+    if frames.icon then
+        UIFrameFadeRemoveFrame(frames.icon)
+        frames.icon:SetAlpha(1.0)
+    end
+end
+
+local function FadeOutCastbar(unitType, duration)
+    local frames = CastbarModule.frames[unitType]
+    if not frames then return end
+    
+    -- RetailUI pattern: Fade entire container - unified and simple
+    local container = frames.container
+    if container then
+        container.fadeOutEx = true
+        UIFrameFadeOut(container, duration or 1, 1.0, 0.0, function()
+            -- OnFinished callback: Hide container and reset flags
+            container:Hide()
+            container.fadeOutEx = false
+        end)
+    end
+end
+
+-- ============================================================================
 -- TEXTURE AND LAYER MANAGEMENT
 -- ============================================================================
 
@@ -182,23 +222,6 @@ local function ForceStatusBarLayer(statusBar)
     end
 end
 
-local function SetupVertexColor(statusBar)
-    if not statusBar or not statusBar.SetStatusBarColor then
-        return
-    end
-
-    if not statusBar._originalSetStatusBarColor then
-        statusBar._originalSetStatusBarColor = statusBar.SetStatusBarColor
-        statusBar.SetStatusBarColor = function(self, r, g, b, a)
-            self:_originalSetStatusBarColor(r, g, b, a or 1)
-            local texture = self:GetStatusBarTexture()
-            if texture then
-                texture:SetVertexColor(1, 1, 1, 1)
-            end
-        end
-    end
-end
-
 local function CreateTextureClipping(statusBar)
     statusBar.UpdateTextureClipping = function(self, progress, isChanneling)
         local texture = self:GetStatusBarTexture()
@@ -207,13 +230,13 @@ local function CreateTextureClipping(statusBar)
         end
 
         if isChanneling then
-            -- ✅ CHANNELING: Ocultar desde la derecha
+            -- CHANNELING: Ocultar desde la derecha (texture se "corta" de derecha a izquierda)
             local clampedProgress = math.max(0.01, math.min(0.99, progress))
             texture:ClearAllPoints()
             texture:SetAllPoints(self)
             texture:SetTexCoord(0, clampedProgress, 0, 1)
         else
-            -- ✅ CASTING: Normal
+            -- CASTING: Normal (texture se "llena" de izquierda a derecha)
             local clampedProgress = math.max(0.01, math.min(0.99, progress))
             texture:SetTexCoord(0, clampedProgress, 0, 1)
             texture:ClearAllPoints()
@@ -221,6 +244,7 @@ local function CreateTextureClipping(statusBar)
         end
     end
 end
+
 -- ============================================================================
 -- BLIZZARD CASTBAR MANAGEMENT
 -- ============================================================================
@@ -365,31 +389,59 @@ end
 -- AURA OFFSET SYSTEM
 -- ============================================================================
 
-local function GetTargetAuraOffset()
-    local cfg = GetConfig("target")
+-- ============================================================================
+-- UNIFIED AURA OFFSET SYSTEM
+-- ============================================================================
+local function GetAuraOffset(unit)
+    local cfg = GetConfig(unit)
     if not cfg or not cfg.autoAdjust then
         return 0
     end
 
-    -- CORREGIDO: Usar el mismo método manual que focus para consistencia
+    if not UnitExists(unit) then
+        return 0
+    end
+
     local buffCount = 0
     local debuffCount = 0
 
-    -- Count buffs
-    for i = 1, 40 do
-        if UnitBuff("target", i) then
-            buffCount = buffCount + 1
-        else
-            break
+    -- Count auras using unified method
+    if unit == "target" then
+        -- Target uses direct UnitBuff/UnitDebuff
+        for i = 1, 40 do
+            if UnitBuff(unit, i) then
+                buffCount = buffCount + 1
+            else
+                break
+            end
         end
-    end
-
-    -- Count debuffs
-    for i = 1, 40 do
-        if UnitDebuff("target", i) then
+        for i = 1, 40 do
+            if UnitDebuff(unit, i) then
+                debuffCount = debuffCount + 1
+            else
+                break
+            end
+        end
+    else
+        -- Focus uses UnitAura method
+        local index = 1
+        while index <= 40 do
+            local name = UnitAura(unit, index, "HELPFUL")
+            if not name then
+                break
+            end
+            buffCount = buffCount + 1
+            index = index + 1
+        end
+        
+        index = 1
+        while index <= 40 do
+            local name = UnitAura(unit, index, "HARMFUL")
+            if not name then
+                break
+            end
             debuffCount = debuffCount + 1
-        else
-            break
+            index = index + 1
         end
     end
 
@@ -397,14 +449,13 @@ local function GetTargetAuraOffset()
         return 0
     end
 
-    -- USAR EXACTAMENTE LOS MISMOS VALORES QUE FOCUS
-    local AURAS_PER_ROW = 6 -- Mismos valores para ambos
+    -- Unified offset calculation
+    local AURAS_PER_ROW = 6
     local BUFF_ROW_HEIGHT = 10
     local DEBUFF_ROW_HEIGHT = 24
-
     local totalOffset = 0
 
-    -- Contar filas de buffs (solo filas adicionales)
+    -- Count buff rows (only additional rows)
     if buffCount > 0 then
         local buffRows = math.ceil(buffCount / AURAS_PER_ROW)
         if buffRows > 1 then
@@ -412,7 +463,7 @@ local function GetTargetAuraOffset()
         end
     end
 
-    -- Siempre sumar debuffs si existen
+    -- Add debuff offset if any debuffs exist
     if debuffCount > 0 then
         totalOffset = totalOffset + DEBUFF_ROW_HEIGHT
     end
@@ -420,180 +471,31 @@ local function GetTargetAuraOffset()
     return totalOffset
 end
 
-local function ApplyTargetAuraOffset()
-    local frames = CastbarModule.frames.target
+local function ApplyAuraOffset(unit)
+    local frames = CastbarModule.frames[unit]
     if not frames.castbar or not frames.castbar:IsVisible() then
         return
     end
 
-    local cfg = GetConfig("target")
+    local cfg = GetConfig(unit)
     if not cfg or not cfg.enabled or not cfg.autoAdjust then
         return
     end
 
-    local offset = GetTargetAuraOffset()
-    local anchorFrame = _G[cfg.anchorFrame] or TargetFrame or UIParent
+    local offset = GetAuraOffset(unit)
+    local anchorFrame = _G[cfg.anchorFrame] or _G[unit:gsub("^%l", string.upper) .. "Frame"] or UIParent
 
-    frames.castbar:ClearAllPoints()
-    frames.castbar:SetPoint(cfg.anchor, anchorFrame, cfg.anchorParent, cfg.x_position, cfg.y_position - offset)
+    -- RetailUI pattern: Position container instead of individual castbar
+    if not frames.container then
+        CreateCastbar(unitType)
+    end
+    
+    frames.container:ClearAllPoints()
+    frames.container:SetPoint(cfg.anchor, anchorFrame, cfg.anchorParent, cfg.x_position, cfg.y_position - offset)
+    
+    -- Set castbar size on container
+    frames.container:SetSize(cfg.sizeX or 200, cfg.sizeY or 16)
 end
-
--- ============================================================================
--- FOCUS AURA OFFSET SYSTEM (Custom implementation since WoW doesn't have one)
--- ============================================================================
-
-local function CountFocusAuras()
-    if not UnitExists("focus") then
-        return 0, 0
-    end
-
-    local buffCount = 0
-    local debuffCount = 0
-
-    -- Count buffs
-    local index = 1
-    while true do
-        local name = UnitAura("focus", index, "HELPFUL")
-        if not name then
-            break
-        end
-        buffCount = buffCount + 1
-        index = index + 1
-        if index > 40 then
-            break
-        end
-    end
-
-    -- Count debuffs
-    index = 1
-    while true do
-        local name = UnitAura("focus", index, "HARMFUL")
-        if not name then
-            break
-        end
-        debuffCount = debuffCount + 1
-        index = index + 1
-        if index > 40 then
-            break
-        end
-    end
-
-    return buffCount, debuffCount
-end
-
-local function GetFocusAuraOffset()
-    local cfg = GetConfig("focus")
-    if not cfg or not cfg.autoAdjust then
-        return 0
-    end
-
-    local buffCount, debuffCount = CountFocusAuras()
-
-    if buffCount == 0 and debuffCount == 0 then
-        return 0
-    end
-
-    local AURAS_PER_ROW = 6 -- Tanto target como focus usan 6 auras por fila
-    local BUFF_ROW_HEIGHT = 10 -- Cada fila de buffs = 18px
-    local DEBUFF_ROW_HEIGHT = 24 -- Cada fila de debuffs = 24px (más grande)
-
-    -- Calcular offset total
-    local totalOffset = 0
-
-    -- Contar filas de buffs
-    if buffCount > 0 then
-        local buffRows = math.ceil(buffCount / AURAS_PER_ROW)
-        if buffRows > 1 then
-            totalOffset = totalOffset + ((buffRows - 1) * BUFF_ROW_HEIGHT)
-        end
-    end
-
-    -- Si hay debuffs, añadir offset de debuffs (más grande)
-    if debuffCount > 0 then
-        totalOffset = totalOffset + DEBUFF_ROW_HEIGHT
-    end
-
-    return totalOffset
-end
-
-local function ApplyFocusAuraOffset()
-    local frames = CastbarModule.frames.focus
-    if not frames.castbar or not frames.castbar:IsVisible() then
-        return
-    end
-
-    local cfg = GetConfig("focus")
-    if not cfg or not cfg.enabled or not cfg.autoAdjust then
-        return
-    end
-
-    local offset = GetFocusAuraOffset()
-    local anchorFrame = _G[cfg.anchorFrame] or FocusFrame or UIParent
-
-    frames.castbar:ClearAllPoints()
-    frames.castbar:SetPoint(cfg.anchor, anchorFrame, cfg.anchorParent, cfg.x_position, cfg.y_position - offset)
-end
-
--- Debug function to test focus aura system
-local function DebugFocusAuras()
-    if not UnitExists("focus") then
-        return
-    end
-
-    local buffCount, debuffCount = CountFocusAuras()
-    local offset = GetFocusAuraOffset()
-
-    -- Calculate layout details
-    local AURAS_PER_ROW = 8
-    local buffRows = buffCount > 0 and math.ceil(buffCount / AURAS_PER_ROW) or 0
-    local debuffRows = debuffCount > 0 and math.ceil(debuffCount / AURAS_PER_ROW) or 0
-    local separationRows = (buffCount > 0 and debuffCount > 0) and 1 or 0
-    local totalRows = buffRows + separationRows + debuffRows
-
-    -- Method 1: UnitAura with filters
-    local buffCount1, debuffCount1 = 0, 0
-    for i = 1, 40 do
-        if UnitAura("focus", i, "HELPFUL") then
-            buffCount1 = buffCount1 + 1
-        end
-        if UnitAura("focus", i, "HARMFUL") then
-            debuffCount1 = debuffCount1 + 1
-        end
-    end
-
-    -- Method 2: UnitBuff/UnitDebuff
-    local buffCount2, debuffCount2 = 0, 0
-    for i = 1, 40 do
-        if UnitBuff("focus", i) then
-            buffCount2 = buffCount2 + 1
-        end
-        if UnitDebuff("focus", i) then
-            debuffCount2 = debuffCount2 + 1
-        end
-    end
-
-    -- List actual auras found
-
-    for i = 1, 40 do
-        local name = UnitAura("focus", i, "HELPFUL")
-        if name then
-        else
-            break
-        end
-    end
-
-    for i = 1, 40 do
-        local name = UnitAura("focus", i, "HARMFUL")
-        if name then
-        else
-            break
-        end
-    end
-end
-
--- Register debug command
-SLASH_DRAGONUI_FOCUSAURAS1 = "/duifocusauras"
-SlashCmdList["DRAGONUI_FOCUSAURAS"] = DebugFocusAuras
 
 -- ============================================================================
 -- TEXT MANAGEMENT
@@ -671,7 +573,10 @@ local function SetCastText(unitType, text)
 end
 local function UpdateTimeText(unitType)
     local frames = CastbarModule.frames[unitType]
-    local state = CastbarModule.states[unitType]
+    if not frames or not frames.castbar then
+        return
+    end
+    local castbar = frames.castbar
 
     if unitType == "player" then
         if not frames.timeValue and not frames.timeMax then
@@ -689,15 +594,18 @@ local function UpdateTimeText(unitType)
     end
 
     local seconds = 0
-    local secondsMax = state.maxValue or 0
+    local secondsMax = (castbar.endTime or 0) - (castbar.startTime or 0)
 
-    if state.casting or state.isChanneling then
-        if state.casting then
+    if castbar.castingEx or castbar.channelingEx then
+        local currentTime = GetTime()
+        local elapsed = currentTime - (castbar.startTime or 0)
+        
+        if castbar.castingEx then
             -- CASTING: Mostrar tiempo restante (cuenta atrás)
-            seconds = max(0, state.maxValue - state.currentValue)
+            seconds = max(0, secondsMax - elapsed)
         else
-            -- ✅ CHANNELING: Mostrar tiempo restante directo (ya decrece)
-            seconds = max(0, state.currentValue)
+            -- CHANNELING: Mostrar tiempo restante directo (drena)
+            seconds = max(0, secondsMax - elapsed)
         end
     end
 
@@ -786,13 +694,26 @@ local function CreateCastbar(unitType)
     local frameName = 'DragonUI' .. unitType:sub(1, 1):upper() .. unitType:sub(2) .. 'Castbar'
     local frames = CastbarModule.frames[unitType]
 
-    -- Main StatusBar
-    frames.castbar = CreateFrame('StatusBar', frameName, UIParent)
-    frames.castbar:SetFrameStrata("MEDIUM")
-    frames.castbar:SetFrameLevel(10)
+    -- Create unified container frame (RetailUI pattern)
+    frames.container = CreateFrame('Frame', frameName .. 'Container', UIParent)
+    frames.container:SetFrameStrata("MEDIUM")
+    frames.container:SetFrameLevel(10)
+    frames.container:SetSize(256, 16)  -- Default size - will be updated by positioning functions
+    frames.container:SetPoint("CENTER", UIParent, "CENTER", 0, -150)  -- Default position - will be updated
+    frames.container:Hide()
+
+    -- Main StatusBar (as child of container)
+    frames.castbar = CreateFrame('StatusBar', frameName, frames.container)
+    frames.castbar:SetFrameLevel(1)  -- Relative to container
+    frames.castbar:SetAllPoints(frames.container)  -- Fill entire container
     frames.castbar:SetMinMaxValues(0, 1)
     frames.castbar:SetValue(0)
-    frames.castbar:Hide()
+    
+    -- RetailUI pattern: Add simple state flags directly to statusBar
+    frames.castbar.castingEx = false
+    frames.castbar.channelingEx = false
+    frames.castbar.fadeOutEx = false
+    frames.castbar.selfInterrupt = false
 
     -- Background
     local bg = frames.castbar:CreateTexture(nil, 'BACKGROUND')
@@ -802,6 +723,10 @@ local function CreateCastbar(unitType)
 
     -- StatusBar texture
     frames.castbar:SetStatusBarTexture(TEXTURES.standard)
+    local texture = frames.castbar:GetStatusBarTexture()
+    if texture then
+        texture:SetVertexColor(1, 1, 1, 1)  -- RetailUI texture color reset
+    end
     frames.castbar:SetStatusBarColor(1, 0.7, 0, 1)
 
     -- Border
@@ -841,14 +766,12 @@ local function CreateCastbar(unitType)
         frames.shield = CreateShield(frames.castbar, frames.icon, frameName, 20)
     end
 
-    -- ✅ APLICAR SOLO TEXTURE CLIPPING SIMPLE
+    -- Apply texture clipping system
     CreateTextureClipping(frames.castbar)
 
-    -- Text background frame y elementos de texto...
-    frames.textBackground = CreateFrame('Frame', frameName .. 'TextBG', UIParent)
-    frames.textBackground:SetFrameStrata("MEDIUM")
-    frames.textBackground:SetFrameLevel(9)
-    frames.textBackground:Hide()
+    -- Text background frame y elementos de texto (as child of container)
+    frames.textBackground = CreateFrame('Frame', frameName .. 'TextBG', frames.container)
+    frames.textBackground:SetFrameLevel(2)  -- Relative to container
 
     local textBg = frames.textBackground:CreateTexture(nil, 'BACKGROUND')
     if unitType == "player" then
@@ -866,10 +789,10 @@ local function CreateCastbar(unitType)
         frames[key] = element
     end
 
-    -- Background frame
+    -- Background frame (as child of container)
     if unitType ~= "player" then
-        frames.background = CreateFrame('Frame', frameName .. 'Background', frames.castbar)
-        frames.background:SetFrameLevel(frames.castbar:GetFrameLevel() - 1)
+        frames.background = CreateFrame('Frame', frameName .. 'Background', frames.container)
+        frames.background:SetFrameLevel(0)  -- Behind everything in container
         frames.background:SetAllPoints(frames.castbar)
     else
         frames.background = frames.textBackground
@@ -900,40 +823,52 @@ function CastbarModule:HandleCastStart_Simple(unitType, unit, isChanneling)
     self:RefreshCastbar(unitType)
 
     local frames = self.frames[unitType]
-    local state = self.states[unitType]
+    local castbar = frames.castbar
 
-    -- Clean state initialization
-    state.casting = not isChanneling
-    state.isChanneling = isChanneling
-    state.spellName = spell
+    -- RetailUI pattern: Set GUID for target/focus verification
+    if unitType == "target" or unitType == "focus" then
+        castbar.unit = UnitGUID(unit)
+    end
 
     local start, finish, duration = ParseCastTimes(startTime, endTime)
-    state.startTime = start
-    state.endTime = finish
-    state.maxValue = duration
-
-    -- Configure castbar
-    frames.castbar:SetMinMaxValues(0, duration)
     
+    -- RetailUI pattern: Store times directly in statusBar frame
+    castbar.startTime = start
+    castbar.endTime = finish
+    
+    -- CRITICAL: Cancel any active fade when starting new cast (spam protection)
+    castbar.fadeOutEx = false
+    if frames.container then
+        frames.container.fadeOutEx = false
+    end
+
+    -- RetailUI pattern: Always use 0-1 range for StatusBar
+    castbar:SetMinMaxValues(0, 1)
+    
+    -- RetailUI pattern: Always use 0-1 range, StatusBar handles visual correctly
     if isChanneling then
-        -- ✅ CHANNELING: Empieza LLENO, como casting pero al revés
-        frames.castbar:SetValue(duration)  -- ← Empezar lleno
-        state.currentValue = duration
-        
-        if frames.castbar.UpdateTextureClipping then
-            frames.castbar:UpdateTextureClipping(1.0, true)  -- ← Progreso inicial = 1.0
+        -- CHANNELING: Start at 1.0 (full)
+        castbar:SetValue(1.0)
+        castbar.channelingEx = true
+        castbar.castingEx = false
+        -- Initialize texture clipping for channeling
+        if castbar.UpdateTextureClipping then
+            castbar:UpdateTextureClipping(1.0, true)
         end
     else
-        -- CASTING: Empieza vacío, se llena normalmente
-        frames.castbar:SetValue(0)  
-        state.currentValue = 0
-        
-        if frames.castbar.UpdateTextureClipping then
-            frames.castbar:UpdateTextureClipping(0.0, false)  -- ← Progreso inicial = 0.0
+        -- CASTING: Start at 0.0 (empty)  
+        castbar:SetValue(0.0)
+        castbar.castingEx = true
+        castbar.channelingEx = false
+        -- Initialize texture clipping for casting
+        if castbar.UpdateTextureClipping then
+            castbar:UpdateTextureClipping(0.0, false)
         end
     end
     
-    frames.castbar:Show()
+    -- RetailUI pattern: Container handles visibility - individual elements shown as needed
+    -- RestoreCastbarVisibility already handles showing the container
+    RestoreCastbarVisibility(unitType)
     
     if frames.background and frames.background ~= frames.textBackground then
         frames.background:Show()
@@ -953,9 +888,19 @@ function CastbarModule:HandleCastStart_Simple(unitType, unit, isChanneling)
         frames.castbar:SetStatusBarTexture(TEXTURES.channel)
         frames.castbar:SetStatusBarColor(unitType == "player" and 0 or 1, 1, unitType == "player" and 1 or 1, 1)
         UpdateChannelTicks(frames.castbar, frames.ticks, spell)
+        -- RetailUI pattern: Reset texture color to see real texture colors
+        local texture = frames.castbar:GetStatusBarTexture()
+        if texture then
+            texture:SetVertexColor(1, 1, 1, 1)
+        end
     else
         frames.castbar:SetStatusBarTexture(TEXTURES.standard)
         frames.castbar:SetStatusBarColor(1, 0.7, 0, 1)
+        -- RetailUI pattern: Reset texture color to see real texture colors
+        local texture = frames.castbar:GetStatusBarTexture()
+        if texture then
+            texture:SetVertexColor(1, 1, 1, 1)
+        end
     end
 
     ForceStatusBarLayer(frames.castbar)
@@ -987,11 +932,22 @@ function CastbarModule:HandleCastStart_Simple(unitType, unit, isChanneling)
         frames.textBackground:SetPoint("TOP", frames.castbar, "BOTTOM", 0, unitType == "player" and 6 or 8)
     end
 end
-function CastbarModule:HandleCastStop_Simple(unitType, wasInterrupted)
+function CastbarModule:HandleCastStop_Simple(unitType, wasInterrupted, isChannelStop)
     local frames = self.frames[unitType]
-    local state = self.states[unitType]
+    local castbar = frames.castbar
 
-    if not (state.casting or state.isChanneling) and not wasInterrupted then
+    -- RetailUI pattern: GUID verification for target/focus
+    if unitType == "target" then
+        if castbar.unit ~= UnitGUID("target") then
+            return
+        end
+    elseif unitType == "focus" then
+        if castbar.unit ~= UnitGUID("focus") then
+            return
+        end
+    end
+
+    if not (castbar.castingEx or castbar.channelingEx) and not wasInterrupted then
         return
     end
 
@@ -1000,28 +956,34 @@ function CastbarModule:HandleCastStop_Simple(unitType, wasInterrupted)
         return
     end
 
-    if wasInterrupted then
-        -- Show interrupted state
-        state.casting = false
-        state.isChanneling = false
+    -- RetailUI pattern: Clear casting/channeling flags
+    castbar.castingEx = false
+    castbar.channelingEx = false
+    
+    -- RetailUI pattern: selfInterrupt ONLY for channel stops
+    castbar.selfInterrupt = isChannelStop or false
 
+    if wasInterrupted or castbar.selfInterrupt then
+        -- Show interrupted state
         if frames.shield then frames.shield:Hide() end
         if frames.spark then frames.spark:Hide() end
         if frames.flash then frames.flash:Hide() end
         HideAllTicks(frames.ticks)
 
-        frames.castbar:SetStatusBarTexture(TEXTURES.interrupted)
-        frames.castbar:SetStatusBarColor(1, 0, 0, 1)
-        frames.castbar:SetValue(state.maxValue)
-
-        -- ✅ RESETEAR TEXTURE CLIPPING para mostrar textura completa
-        local texture = frames.castbar:GetStatusBarTexture()
+        castbar:SetStatusBarTexture(TEXTURES.interrupted)
+        castbar:SetStatusBarColor(1, 0, 0, 1)
+        castbar:SetValue(1.0)  -- Always full for interrupted display
+        -- Reset texture clipping to show full interrupted texture
+        local texture = castbar:GetStatusBarTexture()
         if texture then
-            texture:SetTexCoord(0, 1, 0, 1)  -- Mostrar completo para interrupted
+            texture:SetTexCoord(0, 1, 0, 1)  -- Show complete texture
+            texture:SetVertexColor(1, 1, 1, 1)
         end
 
         SetCastText(unitType, "Interrupted")
-        state.holdTime = cfg.holdTimeInterrupt or 0.8
+        
+        -- RetailUI pattern: Fade all elements consistently
+        FadeOutCastbar(unitType, 1)
 
     else
         -- Normal completion
@@ -1029,13 +991,10 @@ function CastbarModule:HandleCastStop_Simple(unitType, wasInterrupted)
         if frames.shield then frames.shield:Hide() end
         HideAllTicks(frames.ticks)
 
-        state.casting = false
-        state.isChanneling = false
-
-        -- ✅ RESETEAR CLIPPING para completion flash
-        local texture = frames.castbar:GetStatusBarTexture()
+        -- Reset texture clipping to show full completion texture
+        local texture = castbar:GetStatusBarTexture()
         if texture then
-            texture:SetTexCoord(0, 1, 0, 1)  -- Mostrar completo para flash
+            texture:SetTexCoord(0, 1, 0, 1)  -- Show complete texture for flash
         end
 
         if frames.flash then
@@ -1047,8 +1006,24 @@ function CastbarModule:HandleCastStop_Simple(unitType, wasInterrupted)
             end, 0.3)
         end
 
-        state.holdTime = cfg.holdTime or 0.3
+        -- RetailUI pattern: Fade all elements consistently  
+        FadeOutCastbar(unitType, 1)
     end
+end
+
+function CastbarModule:HandleCastFailed_Simple(unitType)
+    local frames = self.frames[unitType]
+    local castbar = frames.castbar
+    
+    if not castbar then
+        return
+    end
+    
+    -- RetailUI pattern: FAILED events do NOTHING to textures/colors
+    -- Let the casting continue normally without any visual changes
+    -- This prevents interfering with the ongoing cast visualization
+    
+    -- DO NOT fade like RetailUI - let cast continue normally
 end
 
 
@@ -1056,61 +1031,48 @@ end
 -- UPDATE HANDLER
 -- ============================================================================
 function CastbarModule:OnUpdate(unitType, castbar, elapsed)
-    local state = self.states[unitType]
     local frames = self.frames[unitType]
+    if not frames then
+        return
+    end
     local cfg = GetConfig(unitType)
 
     if not cfg or not cfg.enabled then
         return
     end
 
-    local currentTime = GetTime()
-
-    if state.casting or state.isChanneling then
-        local progress
-
-        if state.casting then
-            -- CASTING: Progreso normal de 0 a maxValue
-            local elapsed = math.min(currentTime, state.endTime) - state.startTime
-            local value = elapsed
-            progress = elapsed / state.maxValue
-            
-            castbar:SetValue(value)  -- StatusBar se llena normalmente
-            state.currentValue = value
-        else
-            -- ✅ CHANNELING: EXACTAMENTE IGUAL QUE CASTING PERO AL REVÉS
-            local elapsed = math.min(currentTime, state.endTime) - state.startTime
-            local remaining = state.maxValue - elapsed  -- ← INVERTIR: remaining en lugar de elapsed
-            progress = remaining / state.maxValue  -- ← INVERTIR: progress de 1→0
-            
-            castbar:SetValue(remaining)  -- ← INVERTIR: StatusBar se vacía
-            state.currentValue = remaining
+    -- RetailUI pattern: Exact same logic as RetailUI CastingBarFrame_OnUpdate
+    if castbar.channelingEx or castbar.castingEx then
+        local currentTime, value, remainingTime = GetTime(), 0, 0
+        
+        if castbar.castingEx then
+            remainingTime = min(currentTime, castbar.endTime) - castbar.startTime
+            value = remainingTime / (castbar.endTime - castbar.startTime)
+        elseif castbar.channelingEx then
+            remainingTime = castbar.endTime - currentTime
+            value = remainingTime / (castbar.endTime - castbar.startTime)
         end
 
-        if currentTime > state.endTime then
-            self:HandleCastStop_Simple(unitType, false)
-            return
+        castbar:SetValue(value)
+
+        -- Apply texture clipping for smooth visual effect
+        if castbar.UpdateTextureClipping then
+            castbar:UpdateTextureClipping(value, castbar.channelingEx)
         end
 
-        -- ✅ APLICAR TEXTURE CLIPPING (IGUAL PARA AMBOS)
-        if frames.castbar.UpdateTextureClipping then
-            frames.castbar:UpdateTextureClipping(progress, state.isChanneling)
+        if currentTime > castbar.endTime then
+            castbar.castingEx, castbar.channelingEx = false, false
+            -- RetailUI pattern: Actually start fade when cast completes
+            FadeOutCastbar(unitType, 1)
         end
 
-        -- ✅ SPARK: Posición basada en el progreso visual
+        -- Update spark position using RetailUI pattern
         if frames.spark and frames.spark:IsShown() then
-            local sparkPosition = castbar:GetWidth() * progress
             frames.spark:ClearAllPoints()
-            frames.spark:SetPoint('CENTER', castbar, 'LEFT', sparkPosition, 0)
+            frames.spark:SetPoint('CENTER', castbar, 'LEFT', value * castbar:GetWidth(), 0)
         end
 
         UpdateTimeText(unitType)
-
-    elseif state.holdTime > 0 then
-        state.holdTime = state.holdTime - elapsed
-        if state.holdTime <= 0 then
-            self:HideCastbar(unitType)
-        end
     end
 end
 -- ============================================================================
@@ -1138,16 +1100,11 @@ function CastbarModule:RefreshCastbar(unitType)
     local frames = self.frames[unitType]
     local frameName = 'DragonUI' .. unitType:sub(1, 1):upper() .. unitType:sub(2) .. 'Castbar'
 
-    -- Calculate aura offset for target and focus
-    local auraOffset = 0
-    if unitType == "target" and cfg.autoAdjust then
-        auraOffset = GetTargetAuraOffset()
-    elseif unitType == "focus" and cfg.autoAdjust then
-        auraOffset = GetFocusAuraOffset()
-    end
+    -- Calculate aura offset using unified function
+    local auraOffset = cfg.autoAdjust and GetAuraOffset(unitType) or 0
 
-    -- Position and size castbar
-    frames.castbar:ClearAllPoints()
+    -- Calculate positioning for container
+    -- (castbar fills container automatically via SetAllPoints)
     local anchorFrame = UIParent
     local anchorPoint = "CENTER"
     local relativePoint = "BOTTOM"
@@ -1174,9 +1131,14 @@ function CastbarModule:RefreshCastbar(unitType)
         relativePoint = cfg.anchorParent or "BOTTOM"
     end
 
-    frames.castbar:SetPoint(anchorPoint, anchorFrame, relativePoint, xPos, yPos - auraOffset)
-    frames.castbar:SetSize(cfg.sizeX or 200, cfg.sizeY or 16)
-    frames.castbar:SetScale(cfg.scale or 1)
+    -- RetailUI pattern: Position and size container instead of individual castbar
+    if not frames.container then
+        CreateCastbar(unitType)
+    end
+    
+    frames.container:SetPoint(anchorPoint, anchorFrame, relativePoint, xPos, yPos - auraOffset)
+    frames.container:SetSize(cfg.sizeX or 200, cfg.sizeY or 16)
+    frames.container:SetScale(cfg.scale or 1)  -- Apply scale to container, not individual castbar
 
     -- Create spark if needed
     if not frames.spark then
@@ -1192,7 +1154,7 @@ function CastbarModule:RefreshCastbar(unitType)
         sparkTexture:SetBlendMode('ADD')
     end
 
-    -- FIXED: Sincronizar escala del spark con el castbar
+    -- Spark needs its own scale (not inside container)
     frames.spark:SetScale(cfg.scale or 1)
 
     -- Position text background
@@ -1200,7 +1162,7 @@ function CastbarModule:RefreshCastbar(unitType)
         frames.textBackground:ClearAllPoints()
         frames.textBackground:SetPoint('TOP', frames.castbar, 'BOTTOM', 0, unitType == "player" and 6 or 8)
         frames.textBackground:SetSize(cfg.sizeX or 200, unitType == "player" and 22 or 20)
-        frames.textBackground:SetScale(cfg.scale or 1)
+        -- Text background scaling handled by container scale
     end
 
     -- Configure icon
@@ -1237,7 +1199,7 @@ function CastbarModule:RefreshCastbar(unitType)
     if frames.spark then
         local sparkSize = cfg.sizeY or 16
         frames.spark:SetSize(sparkSize, sparkSize * 2)
-        -- FIXED: Asegurar que la escala del spark coincida con el castbar
+        -- Spark needs its own scale (not inside container)
         frames.spark:SetScale(cfg.scale or 1)
     end
 
@@ -1267,7 +1229,6 @@ function CastbarModule:RefreshCastbar(unitType)
     end
 
     HideBlizzardCastbar(unitType)
-    SetupVertexColor(frames.castbar)
 
     if cfg.text_mode then
         SetTextMode(unitType, cfg.text_mode)
@@ -1276,46 +1237,22 @@ end
 
 function CastbarModule:HideCastbar(unitType)
     local frames = self.frames[unitType]
-    local state = self.states[unitType]
 
-    if frames.castbar then
-        frames.castbar:Hide()
+    -- RetailUI pattern: Hide entire container instead of individual elements
+    if frames.container then
+        frames.container:Hide()
     end
-    if frames.background then
-        frames.background:Hide()
-    end
-    if frames.textBackground then
-        frames.textBackground:Hide()
-    end
-    if frames.flash then
-        frames.flash:Hide()
-    end
-    if frames.spark then
-        frames.spark:Hide()
-    end
-    if frames.shield then
-        frames.shield:Hide()
-    end
-    if frames.icon then
-        frames.icon:Hide()
-    end
-
-    -- Reset estado
-    state.casting = false
-    state.isChanneling = false
-    state.holdTime = 0
-    state.maxValue = 0
-    state.currentValue = 0
-    state.endTime = 0
-    state.startTime = 0
-    state.spellName = ""
-
-    if unitType == "player" then
-        state.castSucceeded = false
-    else
-        if not UnitExists(unitType) then
-            state.unitGUID = nil
-        end
+    
+    -- Reset StatusBar flags
+    local castbar = frames.castbar
+    if castbar then
+        castbar.castingEx = false
+        castbar.channelingEx = false
+        castbar.fadeOutEx = false
+        castbar.selfInterrupt = false
+        castbar.startTime = 0
+        castbar.endTime = 0
+        castbar.unit = nil
     end
 end
 
@@ -1365,9 +1302,9 @@ function CastbarModule:HandleCastingEvent(event, unit)
     elseif event == 'UNIT_SPELLCAST_STOP' then
         self:HandleCastStop_Simple(unitType, false)
     elseif event == 'UNIT_SPELLCAST_CHANNEL_STOP' then
-        self:HandleCastStop_Simple(unitType, false)
+        self:HandleCastStop_Simple(unitType, false, true)  -- selfInterrupt for channel stop only
     elseif event == 'UNIT_SPELLCAST_FAILED' then
-        self:HandleCastStop_Simple(unitType, false)
+        self:HandleCastFailed_Simple(unitType)
     elseif event == 'UNIT_SPELLCAST_INTERRUPTED' then
         self:HandleCastStop_Simple(unitType, true)
     elseif event == 'UNIT_SPELLCAST_CHANNEL_INTERRUPTED' then
@@ -1388,7 +1325,7 @@ function CastbarModule:HandleTargetChanged()
     -- ✅ FIXED: Limpiar estado siempre que el GUID no coincida
     if UnitExists("target") and statusBar.unit == UnitGUID("target") then
         -- Same target, check if cast should still be visible
-        if GetTime() > (self.states.target.endTime or 0) then
+        if GetTime() > (statusBar.endTime or 0) then
             self:HideCastbar("target") -- ← Usar HideCastbar para limpieza completa
         else
             statusBar:Show()
@@ -1407,7 +1344,7 @@ function CastbarModule:HandleTargetChanged()
         elseif UnitChannelInfo("target") then
             self:HandleCastingEvent('UNIT_SPELLCAST_CHANNEL_START', "target")
         end
-        ApplyTargetAuraOffset()
+        ApplyAuraOffset("target")
     end
 end
 
@@ -1422,7 +1359,7 @@ function CastbarModule:HandleFocusChanged()
     -- ✅ FIXED: Misma lógica para focus
     if UnitExists("focus") and statusBar.unit == UnitGUID("focus") then
         -- Same focus, check if cast should still be visible
-        if GetTime() > (self.states.focus.endTime or 0) then
+        if GetTime() > (statusBar.endTime or 0) then
             self:HideCastbar("focus") -- ← Usar HideCastbar para limpieza completa
         else
             statusBar:Show()
@@ -1441,7 +1378,7 @@ function CastbarModule:HandleFocusChanged()
         elseif UnitChannelInfo("focus") then
             self:HandleCastingEvent('UNIT_SPELLCAST_CHANNEL_START', "focus")
         end
-        ApplyFocusAuraOffset()
+        ApplyAuraOffset("focus")
     end
 end
 
@@ -1449,39 +1386,32 @@ end
 -- Función de manejo de delays 
 -- ============================================================================
 function CastbarModule:HandleCastDelayed_Simple(unitType, unit)
-    local state = self.states[unitType]
+    local frames = self.frames[unitType]
+    local castbar = frames.castbar
 
-    if not (state.casting or state.isChanneling) then
+    if not castbar or not (castbar.castingEx or castbar.channelingEx) then
         return
     end
 
     local spell, startTime, endTime
 
-    if state.casting then
+    if castbar.castingEx then
         spell, _, _, _, startTime, endTime = UnitCastingInfo(unit)
     else
         spell, _, _, _, startTime, endTime = UnitChannelInfo(unit)
     end
 
-    if not spell or spell ~= state.spellName then
+    if not spell then
         self:HideCastbar(unitType)
         return
     end
 
-    -- Update times only
-    state.startTime = startTime / 1000
-    state.endTime = endTime / 1000
-    state.maxValue = state.endTime - state.startTime
-
-    local frames = self.frames[unitType]
-    frames.castbar:SetMinMaxValues(0, state.maxValue)
+    -- RetailUI pattern: Update statusBar times for OnUpdate calculations
+    local start = startTime / 1000
+    local finish = endTime / 1000
     
-    -- ✅ Para channeling después de delay, mantener StatusBar lleno
-    if state.isChanneling then
-        frames.castbar:SetValue(state.maxValue)  -- Mantener lleno
-        local currentTime = GetTime()
-        state.currentValue = math.max(0, state.endTime - currentTime)
-    end
+    castbar.startTime = start
+    castbar.endTime = finish
 end
 
 -- ============================================================================
@@ -1491,12 +1421,12 @@ local function OnEvent(self, event, unit, ...)
     if event == 'UNIT_AURA' and unit == 'target' then
         local cfg = GetConfig("target")
         if cfg and cfg.enabled and cfg.autoAdjust then
-            addon.core:ScheduleTimer(ApplyTargetAuraOffset, 0.05)
+            addon.core:ScheduleTimer(function() ApplyAuraOffset("target") end, 0.05)
         end
     elseif event == 'UNIT_AURA' and unit == 'focus' then
         local cfg = GetConfig("focus")
         if cfg and cfg.enabled and cfg.autoAdjust then
-            addon.core:ScheduleTimer(ApplyFocusAuraOffset, 0.05)
+            addon.core:ScheduleTimer(function() ApplyAuraOffset("focus") end, 0.05)
         end
     elseif event == 'PLAYER_TARGET_CHANGED' then
         CastbarModule:HandleTargetChanged()
@@ -1525,17 +1455,13 @@ local function OnEvent(self, event, unit, ...)
     end
 end
 
--- Public API
+-- Public API (simplified)
 function addon.RefreshCastbar()
     CastbarModule:RefreshCastbar("player")
 end
 
 function addon.RefreshTargetCastbar()
     CastbarModule:RefreshCastbar("target")
-end
-
-function addon.RefreshFocusCastbar()
-    CastbarModule:RefreshCastbar("focus")
 end
 
 -- Initialize
@@ -1556,7 +1482,7 @@ if TargetFrameSpellBar then
     hooksecurefunc('Target_Spellbar_AdjustPosition', function()
         local cfg = GetConfig("target")
         if cfg and cfg.enabled and cfg.autoAdjust then
-            addon.core:ScheduleTimer(ApplyTargetAuraOffset, 0.05)
+            addon.core:ScheduleTimer(function() ApplyAuraOffset("target") end, 0.05)
         end
     end)
 end
@@ -1657,18 +1583,16 @@ end
 
 --  FUNCIONES DE TESTEO PARA EL EDITOR
 local function ShowPlayerCastbarTest()
-    -- Mostrar el castbar aunque no haya casting
+    -- RetailUI pattern: Show container instead of individual elements
     local frames = CastbarModule.frames.player
-    if frames.castbar then
-        -- Simular un cast de prueba
-        frames.castbar:SetMinMaxValues(0, 1)
-        frames.castbar:SetValue(0.5)
-        frames.castbar:Show()
-
-        if frames.textBackground then
-            frames.textBackground:Show()
-        end
-
+    if not frames.container then
+        CreateCastbar("player")
+    end
+    
+    if frames.container then
+        -- Show container with test cast
+        frames.container:Show()
+        
         -- Mostrar texto de prueba
         CastbarModule:ShowCastbar("player", "Fire ball", 0.5, 1, 1.5, false, false)
     end
@@ -1681,6 +1605,7 @@ end
 
 --  FUNCIÓN AUXILIAR PARA MOSTRAR CASTBAR (USADA EN TESTS)
 function CastbarModule:ShowCastbar(unitType, spellName, currentValue, maxValue, duration, isChanneling, isInterrupted)
+    -- Public API compatibility function - converts old parameters to new system
     local frames = self.frames[unitType]
     if not frames.castbar then
         self:RefreshCastbar(unitType)
@@ -1691,28 +1616,62 @@ function CastbarModule:ShowCastbar(unitType, spellName, currentValue, maxValue, 
         return
     end
 
-    local state = self.states[unitType]
-    state.casting = not isChanneling
-    state.isChanneling = isChanneling
-    state.spellName = spellName
-    state.maxValue = maxValue
-    state.currentValue = currentValue
+    local castbar = frames.castbar
+    local currentTime = GetTime()
+    
+    -- RetailUI pattern: Set StatusBar times and flags directly
+    castbar.startTime = currentTime
+    castbar.endTime = currentTime + (duration or maxValue or 1)
+    castbar.castingEx = not isChanneling
+    castbar.channelingEx = isChanneling
+    castbar.fadeOutEx = false
+    castbar.selfInterrupt = false
 
-    frames.castbar:SetMinMaxValues(0, maxValue)
-    frames.castbar:SetValue(currentValue)
-    frames.castbar:Show()
+    -- Always use 0-1 range
+    castbar:SetMinMaxValues(0, 1)
+    
+    -- Convert currentValue/maxValue to 0-1 range
+    local progress = maxValue > 0 and (currentValue / maxValue) or 0
+    if isChanneling then
+        -- For channeling, invert the progress
+        progress = 1 - progress
+    end
+    castbar:SetValue(progress)
+    -- RetailUI pattern: Show entire container instead of individual elements
+    if not frames.container then
+        CreateCastbar(unitType)
+    end
+    
+    frames.container:Show()
+    
+    -- Fix: Cancel any active fadeout and restore full visibility
+    UIFrameFadeRemoveFrame(frames.container)
+    frames.container:SetAlpha(1.0)
 
     if isInterrupted then
-        frames.castbar:SetStatusBarTexture(TEXTURES.interrupted)
-        frames.castbar:SetStatusBarColor(1, 0, 0, 1)
+        castbar:SetStatusBarTexture(TEXTURES.interrupted)
+        local texture = castbar:GetStatusBarTexture()
+        if texture then
+            texture:SetVertexColor(1, 1, 1, 1)  -- RetailUI texture color reset
+        end
+        castbar:SetStatusBarColor(1, 0, 0, 1)
         SetCastText(unitType, "Interrupted")
+        castbar.selfInterrupt = true
     else
         if isChanneling then
-            frames.castbar:SetStatusBarTexture(TEXTURES.channel)
-            frames.castbar:SetStatusBarColor(0, 1, 0, 1)
+            castbar:SetStatusBarTexture(TEXTURES.channel)
+            local texture = castbar:GetStatusBarTexture()
+            if texture then
+                texture:SetVertexColor(1, 1, 1, 1)  -- RetailUI texture color reset
+            end
+            castbar:SetStatusBarColor(0, 1, 0, 1)
         else
-            frames.castbar:SetStatusBarTexture(TEXTURES.standard)
-            frames.castbar:SetStatusBarColor(1, 0.7, 0, 1)
+            castbar:SetStatusBarTexture(TEXTURES.standard)
+            local texture = castbar:GetStatusBarTexture()
+            if texture then
+                texture:SetVertexColor(1, 1, 1, 1)  -- RetailUI texture color reset
+            end
+            castbar:SetStatusBarColor(1, 0.7, 0, 1)
         end
         SetCastText(unitType, spellName)
     end
@@ -1721,7 +1680,7 @@ function CastbarModule:ShowCastbar(unitType, spellName, currentValue, maxValue, 
         frames.textBackground:Show()
     end
 
-    ForceStatusBarLayer(frames.castbar)
+    ForceStatusBarLayer(castbar)
 end
 
 --  FUNCIÓN DE INICIALIZACIÓN DEL SISTEMA CENTRALIZADO
