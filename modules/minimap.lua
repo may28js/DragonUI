@@ -932,7 +932,7 @@ function MinimapModule:ApplyMinimapSystem()
     self.applied = true
     self.isEnabled = true -- Legacy compatibility
     
-    print("DragonUI: Minimap module applied")
+
 end
 
 -- EVENT HANDLING: Proper event registration/cleanup
