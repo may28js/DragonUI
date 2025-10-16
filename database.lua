@@ -321,7 +321,9 @@ local defaults = {
                 classcolor = false,
                 healthFormat = "both",
                 manaFormat = "both",
-                dragon_decoration = "none"
+                dragon_decoration = "none",
+                alwaysShowAlternateManaText = false,
+                alternateManaFormat = "both"
             },
             target = {
                 classcolor = false,

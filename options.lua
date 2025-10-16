@@ -2607,25 +2607,43 @@ function addon:CreateOptionsTable()
                                 end,
                                 order = 10
                             },
-                            reset_position = {
-                                type = 'execute',
-                                name = "Reset Position",
-                                desc = "Reset player frame to default position",
-                                func = function()
-                                    -- Reset widgets position
-                                    if not addon.db.profile.widgets then
-                                        addon.db.profile.widgets = {}
-                                    end
-                                    addon.db.profile.widgets.player = {
-                                        anchor = "TOPLEFT",
-                                        posX = -19,
-                                        posY = -4
-                                    }
-                                    if addon.PlayerFrame then
-                                        addon.PlayerFrame.Refresh()
+                            alwaysShowAlternateManaText = {
+                                type = 'toggle',
+                                name = "Always Show Alternate Mana Text",
+                                desc = "For Druids: Show mana text always visible vs only on hover (DragonUI text system replaces Blizzard text)",
+                                get = function()
+                                    return addon.db.profile.unitframe.player.alwaysShowAlternateManaText
+                                end,
+                                set = function(info, value)
+                                    addon.db.profile.unitframe.player.alwaysShowAlternateManaText = value
+                                    -- Apply immediately if player config exists
+                                    if addon.PlayerFrame and addon.PlayerFrame.RefreshPlayerFrame then
+                                        addon.PlayerFrame.RefreshPlayerFrame()
                                     end
                                 end,
                                 order = 11
+                            },
+                            alternateManaFormat = {
+                                type = 'select',
+                                name = "Alternate Mana Text Format",
+                                desc = "For Druids: Choose how alternate mana text is displayed using DragonUI formatting (works in both hover and always-visible modes)",
+                                values = {
+                                    numeric = "Current Value Only",
+                                    formatted = "Current / Max",
+                                    percentage = "Percentage Only",
+                                    both = "Percentage + Current/Max"
+                                },
+                                get = function()
+                                    return addon.db.profile.unitframe.player.alternateManaFormat or "both"
+                                end,
+                                set = function(info, value)
+                                    addon.db.profile.unitframe.player.alternateManaFormat = value
+                                    -- Apply immediately if player config exists
+                                    if addon.PlayerFrame and addon.PlayerFrame.RefreshPlayerFrame then
+                                        addon.PlayerFrame.RefreshPlayerFrame()
+                                    end
+                                end,
+                                order = 12
                             }
                         }
                     },

@@ -807,6 +807,173 @@ local function UpdateTextSystemUnit()
         Module.textSystem.update()
     end
 end
+
+-- Create DragonUI text elements for alternate mana bar
+local function SetupAlternateManaTextElements()
+    local alternateManaBar = _G.PlayerFrameAlternateManaBar
+    if not alternateManaBar or not addon.TextSystem then
+        return
+    end
+    
+    -- Create dual text elements using TextSystem
+    addon.TextSystem.CreateDualTextElements(
+        alternateManaBar, -- parentFrame
+        alternateManaBar, -- barFrame (same as parent for this case)
+        "AlternateMana", -- prefix
+        "OVERLAY", -- layer
+        "TextStatusBarText" -- font template
+    )
+end
+
+-- Update alternate mana text using DragonUI TextSystem
+local function UpdateAlternateManaText()
+    local alternateManaBar = _G.PlayerFrameAlternateManaBar
+    if not alternateManaBar or not addon.TextSystem then
+        return
+    end
+    
+    -- Get current mana values
+    local currentMana = UnitPower("player", POWER_TYPE_MANA or 0)
+    local maxMana = UnitPowerMax("player", POWER_TYPE_MANA or 0)
+    
+    if not currentMana or not maxMana or maxMana == 0 then
+        return
+    end
+    
+    -- Get configuration
+    local config = GetPlayerConfig()
+    local textFormat = config and config.alternateManaFormat or "both"
+    local useBreakup = config and config.breakUpLargeNumbers
+    
+    -- Custom handling for alternate mana bar
+    if textFormat == "both" then
+        -- Custom separation for alternate mana bar - adjust spacing here
+        local currentText = useBreakup and addon.TextSystem.AbbreviateLargeNumbers(currentMana) or tostring(currentMana)
+        local percent = math.floor((currentMana / maxMana) * 100)
+        local customSeparator = "    " -- Custom spacing for alternate mana bar (adjust here) 
+        local combinedText = percent .. "%" .. customSeparator .. currentText
+        
+        -- Use as single text instead of dual
+        addon.TextSystem.UpdateDualText(
+            alternateManaBar,
+            "AlternateMana",
+            combinedText,
+            "numeric", -- Treat as single text
+            true -- shouldShow
+        )
+    else
+        -- Use normal TextSystem for other formats
+        local formattedText = addon.TextSystem.FormatStatusText(
+            currentMana, 
+            maxMana, 
+            textFormat, 
+            useBreakup, 
+            "alternateMana"
+        )
+        
+        addon.TextSystem.UpdateDualText(
+            alternateManaBar,
+            "AlternateMana",
+            formattedText,
+            textFormat,
+            true -- shouldShow
+        )
+    end
+end
+
+-- Setup always visible behavior for DragonUI alternate mana text
+local function SetupAlternateManaAlwaysVisible()
+    local alternateManaBar = _G.PlayerFrameAlternateManaBar
+    if not alternateManaBar then
+        return
+    end
+    
+    -- Remove any existing hover scripts
+    if alternateManaBar.DragonUIHoverEnabled then
+        alternateManaBar:SetScript("OnEnter", nil)
+        alternateManaBar:SetScript("OnLeave", nil)
+        alternateManaBar.DragonUIHoverEnabled = false
+    end
+    
+    -- Show text immediately and keep it visible
+    UpdateAlternateManaText()
+end
+
+-- Hide DragonUI alternate mana text elements
+local function HideAlternateManaTextElements()
+    local alternateManaBar = _G.PlayerFrameAlternateManaBar
+    if not alternateManaBar or not addon.TextSystem then
+        return
+    end
+    
+    -- Hide all text elements
+    addon.TextSystem.UpdateDualText(
+        alternateManaBar,
+        "AlternateMana", 
+        "", 
+        "numeric", 
+        false -- shouldShow = false
+    )
+end
+
+-- Setup hover-only behavior for DragonUI alternate mana text
+local function SetupAlternateManaHoverBehavior()
+    local alternateManaBar = _G.PlayerFrameAlternateManaBar
+    if not alternateManaBar or alternateManaBar.DragonUIHoverEnabled then
+        return
+    end
+    
+    -- Hide text initially
+    HideAlternateManaTextElements()
+    
+    -- Setup hover scripts
+    alternateManaBar:SetScript("OnEnter", function()
+        UpdateAlternateManaText()
+    end)
+    
+    alternateManaBar:SetScript("OnLeave", function()
+        HideAlternateManaTextElements()
+    end)
+    
+    alternateManaBar.DragonUIHoverEnabled = true
+end
+
+-- Setup alternate mana bar text system based on configuration
+local function SetupAlternateManaBarAlwaysVisible()
+    local _, playerClass = UnitClass("player")
+    if playerClass ~= "DRUID" then
+        return
+    end
+    
+    local alternateManaBar = _G.PlayerFrameAlternateManaBar
+    if not alternateManaBar then
+        return
+    end
+    
+    -- ALWAYS hide Blizzard text - we always use DragonUI system for druids
+    local blizzardText = alternateManaBar.TextString or _G.PlayerFrameAlternateManaBarText
+    if blizzardText then
+        blizzardText:Hide()
+        blizzardText:SetAlpha(0)
+    end
+    
+    -- ALWAYS setup DragonUI text elements for druids
+    SetupAlternateManaTextElements()
+    
+    -- Get configuration to determine visibility behavior
+    local config = GetPlayerConfig()
+    local alwaysShow = config and config.alwaysShowAlternateManaText
+    
+    if alwaysShow then
+        -- Show DragonUI text always
+        UpdateAlternateManaText()
+        SetupAlternateManaAlwaysVisible()
+    else
+        -- Show DragonUI text only on hover (default behavior)
+        SetupAlternateManaHoverBehavior()
+    end
+end
+
 -- ============================================================================
 -- FRAME CREATION & CONFIGURATION
 -- ============================================================================
@@ -1347,6 +1514,9 @@ local function ApplyPlayerConfig()
 
     UpdatePlayerDragonDecoration()
     UpdateGlowVisibility()
+    
+    -- Setup alternate mana bar text to always be visible for druids
+    SetupAlternateManaBarAlwaysVisible()
 
 end
 
@@ -1380,6 +1550,8 @@ local function RefreshPlayerFrame()
     if Module.textSystem then
         Module.textSystem.update()
     end
+    
+    --  La visibilidad del texto de barra alternativa se configura una sola vez en ApplyPlayerConfig()
 
 end
 
@@ -1446,6 +1618,8 @@ local function InitializePlayerFrame()
             UpdatePlayerHealthBarColor()
         end
     end)
+    
+    -- Alternate mana bar text setup done once in ApplyPlayerConfig() - no need for hooks
 
     -- Hook para actualizar posición del timer PVP cuando aparece/cambia
     local pvpTimerText = _G["PlayerPVPTimerText"]
@@ -1675,6 +1849,21 @@ local function SetupPlayerEvents()
         elseif POWER_EVENTS[event] then
             UpdateManaBarColor(PlayerFrameManaBar)
             UpdatePowerBarTexture(PlayerFrameManaBar)
+            -- Update alternate mana text for druids (both always visible and hover modes)
+            local _, playerClass = UnitClass("player")
+            if playerClass == "DRUID" then
+                local config = GetPlayerConfig()
+                if config and config.alwaysShowAlternateManaText then
+                    -- Always visible mode: update immediately
+                    UpdateAlternateManaText()
+                else
+                    -- Hover mode: only update if currently showing (mouse over)
+                    local alternateManaBar = _G.PlayerFrameAlternateManaBar
+                    if alternateManaBar and alternateManaBar:IsMouseOver() then
+                        UpdateAlternateManaText()
+                    end
+                end
+            end
         end
     end)
 
@@ -1768,6 +1957,26 @@ hooksecurefunc("PlayerFrame_ToVehicleArt", function()
     UpdateDragonVisibilityForVehicle(true, isEliteMode)
 end)
 
+-- Hook para actualizar texto de alternate mana bar cuando cambie el poder
+hooksecurefunc("UnitFrameManaBar_Update", function(statusbar, unit)
+    if unit == "player" then
+        local _, playerClass = UnitClass("player")
+        if playerClass == "DRUID" then
+            local config = GetPlayerConfig()
+            if config and config.alwaysShowAlternateManaText then
+                -- Always visible mode: update immediately
+                UpdateAlternateManaText()
+            else
+                -- Hover mode: only update if currently showing (mouse over)
+                local alternateManaBar = _G.PlayerFrameAlternateManaBar
+                if alternateManaBar and alternateManaBar:IsMouseOver() then
+                    UpdateAlternateManaText()
+                end
+            end
+        end
+    end
+end)
+
 -- Hook PlayerFrame_SequenceFinished (final de animaciones)
 if PlayerFrame_SequenceFinished then
     hooksecurefunc("PlayerFrame_SequenceFinished", function()
@@ -1798,6 +2007,18 @@ PlayerFrame.SetPoint = function(self, point, relativeTo, relativePoint, x, y)
         -- Llamar al SetPoint original para otros casos
         originalPlayerFrameSetPoint(self, point, relativeTo, relativePoint, x, y)
     end
+end
+
+-- Profile change callbacks for configuration updates
+local function OnProfileChanged()
+    SetupAlternateManaBarAlwaysVisible()
+end
+
+-- Register profile callbacks
+if addon.db and addon.db.RegisterCallback then
+    addon.db.RegisterCallback(addon, "OnProfileChanged", OnProfileChanged)
+    addon.db.RegisterCallback(addon, "OnProfileCopied", OnProfileChanged)
+    addon.db.RegisterCallback(addon, "OnProfileReset", OnProfileChanged)
 end
 
 -- Expose public API
