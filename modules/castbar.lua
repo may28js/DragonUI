@@ -1536,35 +1536,63 @@ local function OnEvent(self, event, unit, ...)
     if event == 'UNIT_AURA' and unit == 'target' then
         local cfg = GetConfig("target")
         if cfg and cfg.enabled and cfg.autoAdjust then
-            addon.core:ScheduleTimer(function() ApplyAuraOffset("target") end, 0.05)
+            if addon.core and addon.core.ScheduleTimer then
+                addon.core:ScheduleTimer(function() ApplyAuraOffset("target") end, 0.05)
+            else
+                ApplyAuraOffset("target")
+            end
         end
     elseif event == 'UNIT_AURA' and unit == 'focus' then
         local cfg = GetConfig("focus")
         if cfg and cfg.enabled and cfg.autoAdjust then
-            addon.core:ScheduleTimer(function() ApplyAuraOffset("focus") end, 0.05)
+            if addon.core and addon.core.ScheduleTimer then
+                addon.core:ScheduleTimer(function() ApplyAuraOffset("focus") end, 0.05)
+            else
+                ApplyAuraOffset("focus")
+            end
         end
     elseif event == 'PLAYER_TARGET_CHANGED' then
         CastbarModule:HandleTargetChanged()
     elseif event == 'PLAYER_FOCUS_CHANGED' then
         CastbarModule:HandleFocusChanged()
     elseif event == 'PLAYER_ENTERING_WORLD' then
-        addon.core:ScheduleTimer(function()
+        -- Protección total para reload en combate
+        if addon.core and addon.core.ScheduleTimer then
+            -- Path normal con timers
+            addon.core:ScheduleTimer(function()
+                CastbarModule:RefreshCastbar("player")
+                CastbarModule:RefreshCastbar("target")
+                CastbarModule:RefreshCastbar("focus")
+                
+                addon.core:ScheduleTimer(function()
+                    if IsEnabled("player") then
+                        HideBlizzardCastbar("player")
+                    end
+                    if IsEnabled("target") then
+                        HideBlizzardCastbar("target")
+                    end
+                    if IsEnabled("focus") then
+                        HideBlizzardCastbar("focus")
+                    end
+                end, 1.0)
+            end, 0.5)
+        else
+            -- Fallback inmediato sin timers (reload en combate)
             CastbarModule:RefreshCastbar("player")
             CastbarModule:RefreshCastbar("target")
             CastbarModule:RefreshCastbar("focus")
             
-            addon.core:ScheduleTimer(function()
-                if IsEnabled("player") then
-                    HideBlizzardCastbar("player")
-                end
-                if IsEnabled("target") then
-                    HideBlizzardCastbar("target")
-                end
-                if IsEnabled("focus") then
-                    HideBlizzardCastbar("focus")
-                end
-            end, 1.0)
-        end, 0.5)
+            -- Segundo paso también inmediato
+            if IsEnabled("player") then
+                HideBlizzardCastbar("player")
+            end
+            if IsEnabled("target") then
+                HideBlizzardCastbar("target")
+            end
+            if IsEnabled("focus") then
+                HideBlizzardCastbar("focus")
+            end
+        end
     else
         CastbarModule:HandleCastingEvent(event, unit)
     end
@@ -1601,13 +1629,18 @@ for _, event in ipairs(events) do
 end
 
 eventFrame:SetScript('OnEvent', OnEvent)
-
 -- Hook native WoW aura positioning
 if TargetFrameSpellBar then
     hooksecurefunc('Target_Spellbar_AdjustPosition', function()
         local cfg = GetConfig("target")
         if cfg and cfg.enabled and cfg.autoAdjust then
-            addon.core:ScheduleTimer(function() ApplyAuraOffset("target") end, 0.05)
+            -- PROTECCIÓN AÑADIDA
+            if addon.core and addon.core.ScheduleTimer then
+                addon.core:ScheduleTimer(function() ApplyAuraOffset("target") end, 0.05)
+            else
+                -- Fallback sin timer
+                ApplyAuraOffset("target")
+            end
         end
     end)
 end
