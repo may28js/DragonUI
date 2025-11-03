@@ -2695,11 +2695,20 @@ function addon:CreateOptionsTable()
                     },
 
                     tot = {
-                        type = 'group',
-                        name = "Target of Target",
-                        order = 4,
-                        args = {
-                            scale = {
+    type = 'group',
+    name = "Target of Target",
+    order = 4,
+    args = {
+        info = {
+            type = 'description',
+            name = "|cffFFD700Note:|r DragonUI styles the native WoW Target of Target frame.\n\n" ..
+                  "|cffFF6347If you don't see it:|r\n" ..
+                  "1. Press |cff00FF00ESC|r -> Interface -> Combat\n" ..
+                  "2. Check |cff00FF00'Target of Target'|r\n" ..
+                  "3. Reload UI",
+            order = 0
+        },
+        scale = {
                                 type = 'range',
                                 name = "Scale",
                                 desc = "Scale of the target of target frame",
